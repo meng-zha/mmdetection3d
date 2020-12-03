@@ -22,6 +22,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train a detector')
     parser.add_argument('config', help='train config file path')
     parser.add_argument('--work-dir', help='the dir to save logs and models')
+    parser.add_argument('--task',help='the description of the task')
     parser.add_argument(
         '--resume-from', help='the checkpoint file to resume from')
     parser.add_argument(
@@ -78,7 +79,8 @@ def main():
     # work_dir is determined in this priority: CLI > segment in file > filename
     if args.work_dir is not None:
         # update configs according to CLI args if args.work_dir is not None
-        cfg.work_dir = args.work_dir
+        timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
+        cfg.work_dir = osp.join(args.work_dir,f'{args.task}_{timestamp}')
     elif cfg.get('work_dir', None) is None:
         # use config filename as default work_dir if cfg.work_dir is None
         cfg.work_dir = osp.join('./work_dirs',
@@ -126,6 +128,16 @@ def main():
     # log some basic info
     logger.info(f'Distributed training: {distributed}')
     logger.info(f'Config:\n{cfg.pretty_text}')
+
+    # copy important files to backup
+    if args.local_rank == 0:
+        # copy important files to backup
+        backup_dir = os.path.join(cfg.work_dir, "mmdet3d")
+        os.makedirs(backup_dir, exist_ok=True)
+        os.system("cp -r ./configs %s/" % backup_dir)
+        os.system("cp -r ./tools %s/" % backup_dir)
+        os.system("cp -r ./mmdet3d %s/" % backup_dir)
+        logger.info(f"Backup source files to {cfg.work_dir}/mmdet3d")
 
     # set random seeds
     if args.seed is not None:
