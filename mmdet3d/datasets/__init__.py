@@ -2,6 +2,7 @@ from mmdet.datasets.builder import build_dataloader
 from .builder import DATASETS, build_dataset
 from .custom_3d import Custom3DDataset
 from .kitti_dataset import KittiDataset
+from .kitti_track_dataset import KittiTrackDataset
 from .lyft_dataset import LyftDataset
 from .nuscenes_dataset import NuScenesDataset
 from .pipelines import (BackgroundPointsFilter, GlobalRotScaleTrans,
@@ -15,7 +16,7 @@ from .sunrgbd_dataset import SUNRGBDDataset
 from .waymo_dataset import WaymoDataset
 
 __all__ = [
-    'KittiDataset', 'GroupSampler', 'DistributedGroupSampler',
+    'KittiDataset', 'KittiTrackDataset', 'GroupSampler', 'DistributedGroupSampler',
     'build_dataloader', 'RepeatFactorDataset', 'DATASETS', 'build_dataset',
     'CocoDataset', 'NuScenesDataset', 'LyftDataset', 'ObjectSample',
     'RandomFlip3D', 'ObjectNoise', 'GlobalRotScaleTrans', 'PointShuffle',
