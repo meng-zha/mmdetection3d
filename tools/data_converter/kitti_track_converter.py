@@ -36,27 +36,25 @@ def _calculate_num_points_in_gt(data_path,
 
         # points_v = points_v[points_v[:, 0] > 0]
         annos = info['annos']
-        num_obj = len([n for n in annos['name'] if n != 'DontCare'])
+        num_obj = [i for i,n in enumerate(annos['name']) if n != 'DontCare']
         # annos = kitti.filter_kitti_anno(annos, ['DontCare'])
-        dims = annos['dimensions'][:num_obj]
-        loc = annos['location'][:num_obj]
-        rots = annos['rotation_y'][:num_obj]
+        dims = annos['dimensions'][num_obj]
+        loc = annos['location'][num_obj]
+        rots = annos['rotation_y'][num_obj]
         gt_boxes_camera = np.concatenate([loc, dims, rots[..., np.newaxis]],
                                          axis=1)
         gt_boxes_lidar = box_np_ops.box_camera_to_lidar(
             gt_boxes_camera, rect, Trv2c)
         indices = box_np_ops.points_in_rbbox(points_v[:, :3], gt_boxes_lidar)
-        num_points_in_gt = indices.sum(0)
-        num_ignored = len(annos['dimensions']) - num_obj
-        num_points_in_gt = np.concatenate(
-            [num_points_in_gt, -np.ones([num_ignored])])
+        num_points_in_gt = -np.ones(len(annos['dimensions']))
+        num_points_in_gt[num_obj] = indices.sum(0)
         annos['num_points_in_gt'] = num_points_in_gt.astype(np.int32)
 
 
 def create_kitti_track_info_file(data_path,
-                           pkl_prefix='kitti',
-                           save_path=None,
-                           relative_path=True):
+                                 pkl_prefix='kitti',
+                                 save_path=None,
+                                 relative_path=True):
     """Create info file of KITTI dataset.
 
     Given the raw data, generate its related info file in pkl format.
@@ -82,6 +80,8 @@ def create_kitti_track_info_file(data_path,
         training=True,
         velodyne=True,
         calib=True,
+        track=True,
+        poses_info=True,
         scene_ids=train_img_ids,
         relative_path=relative_path)
     _calculate_num_points_in_gt(data_path, kitti_infos_train, relative_path)
@@ -93,6 +93,8 @@ def create_kitti_track_info_file(data_path,
         training=True,
         velodyne=True,
         calib=True,
+        track=True,
+        poses_info=True,
         scene_ids=val_img_ids,
         relative_path=relative_path)
     _calculate_num_points_in_gt(data_path, kitti_infos_val, relative_path)

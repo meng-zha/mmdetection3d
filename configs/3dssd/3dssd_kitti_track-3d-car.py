@@ -1,5 +1,6 @@
 _base_ = [
-    '../_base_/models/3dssd.py', '../_base_/datasets/kitti_track-3d-car.py',
+    '../_base_/models/r3dnet.py', '../_base_/datasets/kitti_track-3d-car.py',
+    # '../_base_/models/3dssd.py', '../_base_/datasets/kitti_track-3d-car.py',
     '../_base_/default_runtime.py'
 ]
 
@@ -38,14 +39,14 @@ train_pipeline = [
         file_client_args=file_client_args),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='ObjectRangeFilter', point_cloud_range=point_cloud_range),
-    dict(type='ObjectSample', db_sampler=db_sampler),
+    # dict(type='ObjectSample', db_sampler=db_sampler),
     dict(type='RandomFlip3D', flip_ratio_bev_horizontal=0.5),
-    dict(
-        type='ObjectNoise',
-        num_try=100,
-        translation_std=[1.0, 1.0, 0],
-        global_rot_range=[0.0, 0.0],
-        rot_range=[-1.0471975511965976, 1.0471975511965976]),
+    # dict(
+    #     type='ObjectNoise',
+    #     num_try=100,
+    #     translation_std=[1.0, 1.0, 0],
+    #     global_rot_range=[0.0, 0.0],
+    #     rot_range=[-1.0471975511965976, 1.0471975511965976]),
     dict(
         type='GlobalRotScaleTrans',
         rot_range=[-0.78539816, 0.78539816],
@@ -53,7 +54,7 @@ train_pipeline = [
     dict(type='BackgroundPointsFilter', bbox_enlarge_range=(0.5, 2.0, 0.5)),
     dict(type='IndoorPointSample', num_points=16384),
     dict(type='DefaultFormatBundle3D', class_names=class_names),
-    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d'])
+    dict(type='Collect3D', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d', 'gt_offset'])
 ]
 
 test_pipeline = [
@@ -89,7 +90,7 @@ test_pipeline = [
 data = dict(
     samples_per_gpu=8,
     workers_per_gpu=8,
-    train=dict(dataset=dict(pipeline=train_pipeline)),
+    train=dict(dataset=dict(pipeline=train_pipeline,time_series=2)),
     val=dict(pipeline=test_pipeline),
     test=dict(pipeline=test_pipeline))
 
@@ -102,8 +103,10 @@ model = dict(
         bbox_coder=dict(
             type='AnchorFreeBBoxCoder', num_dir_bins=12, with_rot=True)))
 
+# test_cfg = dict(with_hidden=False)
+
 # optimizer
-lr = 0.002  # max learning rate
+lr = 0.002 # max learning rate
 optimizer = dict(type='AdamW', lr=lr, weight_decay=0)
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 lr_config = dict(policy='step', warmup=None, step=[80, 120])

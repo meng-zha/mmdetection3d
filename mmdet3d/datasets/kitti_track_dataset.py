@@ -1,15 +1,19 @@
 import copy
 import mmcv
+from mmdet.datasets.pipelines.compose import Compose
 import numpy as np
 import os
 import tempfile
 import torch
 from mmcv.utils import print_log
+from mmcv.parallel import DataContainer as DC
 from os import path as osp
 
 from mmdet.datasets import DATASETS
+from torch._C import dtype
 from ..core import show_result
-from ..core.bbox import Box3DMode, CameraInstance3DBoxes, points_cam2img
+from ..core.bbox import Box3DMode, box_np_ops, LiDARInstance3DBoxes, points_cam2img
+from ..core.points import LiDARPoints
 from .custom_3d import Custom3DDataset
 
 
@@ -57,6 +61,7 @@ class KittiTrackDataset(Custom3DDataset):
                  pipeline=None,
                  classes=None,
                  modality=None,
+                 time_series=3,
                  box_type_3d='LiDAR',
                  filter_empty_gt=True,
                  test_mode=False,
@@ -76,6 +81,22 @@ class KittiTrackDataset(Custom3DDataset):
         assert self.modality is not None
         self.pcd_limit_range = pcd_limit_range
         self.pts_prefix = pts_prefix
+        self.time_series = time_series
+
+        if pipeline is not None:
+            load_pipeline = []
+            common_pipeline = []
+            format_pipeline = []
+            for pipe in pipeline:
+                if 'Load' in pipe['type'] or 'RangeFilter' in pipe['type']:
+                    load_pipeline.append(pipe)
+                elif 'Collect' in pipe['type'] or 'Format' in pipe['type']:
+                    format_pipeline.append(pipe)
+                else:
+                    common_pipeline.append(pipe)
+            self.load_pipeline = Compose(load_pipeline)
+            self.common_pipeline = Compose(common_pipeline)
+            self.format_pipeline = Compose(format_pipeline)
 
     def _get_pts_filename(self, pts_path):
         """Get point cloud filename according to the given index.
@@ -107,6 +128,9 @@ class KittiTrackDataset(Custom3DDataset):
                     from lidar to different cameras.
                 - ann_info (dict): Annotation info.
         """
+        if index >= len(self.data_infos):
+            return None
+
         info = self.data_infos[index]
         sample_idx = info['image']['image_idx']
         img_filename = os.path.join(self.data_root,
@@ -117,6 +141,7 @@ class KittiTrackDataset(Custom3DDataset):
         Trv2c = info['calib']['Tr_velo_to_cam'].astype(np.float32)
         P2 = info['calib']['P2'].astype(np.float32)
         lidar2img = P2 @ rect @ Trv2c
+        pose = info['pose']
 
         pts_filename = self._get_pts_filename(
             info['point_cloud']['velodyne_path'])
@@ -125,11 +150,16 @@ class KittiTrackDataset(Custom3DDataset):
             pts_filename=pts_filename,
             img_prefix=None,
             img_info=dict(filename=img_filename),
+            pose=pose,
+            track=info['track'],
             lidar2img=lidar2img)
 
         if not self.test_mode:
             annos = self.get_ann_info(index)
             input_dict['ann_info'] = annos
+
+            input_dict['prev'] = info['track']['prev']
+            input_dict['next'] = info['track']['next']
 
         return input_dict
 
@@ -147,6 +177,7 @@ class KittiTrackDataset(Custom3DDataset):
                 - gt_labels_3d (np.ndarray): Labels of ground truths.
                 - gt_bboxes (np.ndarray): 2D ground truth bboxes.
                 - gt_labels (np.ndarray): Labels of ground truths.
+                - gt_offset (np.ndarrya): Offset of bboxes.
                 - gt_names (list[str]): Class names of ground truths.
         """
         # Use index to get the annos, thus the evalhook could also use this api
@@ -160,13 +191,17 @@ class KittiTrackDataset(Custom3DDataset):
         loc = annos['location']
         dims = annos['dimensions']
         rots = annos['rotation_y']
+        gt_offset = annos['next']
         gt_names = annos['name']
         gt_bboxes_3d = np.concatenate([loc, dims, rots[..., np.newaxis]],
                                       axis=1).astype(np.float32)
 
         # convert gt_bboxes_3d to velodyne coordinates
-        gt_bboxes_3d = CameraInstance3DBoxes(gt_bboxes_3d).convert_to(
-            self.box_mode_3d, np.linalg.inv(rect @ Trv2c))
+        gt_boxes_lidar = box_np_ops.box_camera_to_lidar(
+            gt_bboxes_3d, rect, Trv2c)
+        gt_bboxes_3d = np.concatenate([gt_boxes_lidar, gt_offset[:, :2]],
+                                      axis=-1)
+        gt_bboxes_3d = LiDARInstance3DBoxes(gt_bboxes_3d, box_dim=9)
         gt_bboxes = annos['bbox']
 
         selected = self.drop_arrays_by_name(gt_names, ['DontCare'])
@@ -189,6 +224,118 @@ class KittiTrackDataset(Custom3DDataset):
             labels=gt_labels,
             gt_names=gt_names)
         return anns_results
+
+    def prepare_train_data(self, index):
+        """Training data preparation.
+
+        Args:
+            index (int): Index for accessing the target data.
+
+        Returns:
+            dict: Training data dict of the corresponding index.
+        """
+        input_dicts = [self.get_data_info(index)]
+        if input_dicts[0] is None:
+            return None
+
+        # time_series=1 means the normal detection
+        if self.time_series == 1:
+            self.pre_pipeline(input_dicts[0])
+            example = self.load_pipeline(input_dicts[0])
+            if self.filter_empty_gt and (example is None or len(
+                    example['gt_bboxes_3d']) == 0):
+                return None
+            example['gt_bboxes_3d'] = LiDARInstance3DBoxes(
+                example['gt_bboxes_3d'].tensor[:, :7])
+            example = self.common_pipeline(example)
+            example['gt_offset'] = torch.zeros(len(example['gt_bboxes_3d']),2)
+            example = self.format_pipeline(example)
+            return [example]
+
+        for t in range(1, self.time_series):
+            input_dict = self.get_data_info(index + t)
+            if input_dict is None or input_dict['prev'] == 0:
+                # not consecutive frames
+                return None
+            input_dicts.append(input_dict)
+
+        examples = []
+        for t in range(self.time_series):
+            self.pre_pipeline(input_dicts[t])
+            examples.append(self.load_pipeline(input_dicts[t]))
+
+        # record the points num and boxes num
+        points_num = np.array(
+            [0] + [example['points'].shape[0] for example in examples],
+            dtype=np.int32)
+        boxes_num = np.array(
+            [0] + [example['gt_labels_3d'].shape[0] for example in examples],
+            dtype=np.int32)
+
+        # merge multiple frames to one for aug pipeline
+        merge_example = copy.deepcopy(examples[0])
+        merge_example['points_num'] = points_num
+        merge_example['boxes_num'] = boxes_num
+        #TODO: calib the points to one cooard
+        pose_0 = torch.tensor(input_dicts[0]['pose'],dtype=torch.float32)
+        for t in range(1, self.time_series):
+            pose = torch.tensor(input_dicts[t]['pose'],dtype=torch.float32)
+            pad_loc = torch.cat([
+                examples[t]['gt_bboxes_3d'].tensor[:, :3],
+                torch.ones((len(examples[t]['gt_bboxes_3d']), 1))
+            ],dim=1)
+            examples[t]['gt_bboxes_3d'].tensor[:, :3] = (
+                pad_loc @ (pose.T) @ torch.inverse(pose_0.T))[:, :3]
+            pad_points = torch.cat([
+                examples[t]['points'].coord,
+                torch.ones((examples[t]['points'].shape[0], 1))
+            ],dim=1)
+            examples[t]['points'].tensor[:, :3] = (
+                pad_points @ (pose.T) @ torch.inverse(pose_0.T))[:, :3]
+
+        merge_example['points'] = LiDARPoints.cat(
+            [example['points'] for example in examples])
+        merge_example['gt_bboxes_3d'] = LiDARInstance3DBoxes.cat(
+            [example['gt_bboxes_3d'] for example in examples])
+        merge_example['gt_labels_3d'] = np.concatenate(
+            [example['gt_labels_3d'] for example in examples], axis=0)
+
+        if self.filter_empty_gt and (merge_example is None or len(
+                merge_example['gt_bboxes_3d']) == 0):
+            return None
+
+        merge_example = self.common_pipeline(merge_example)
+
+        if self.filter_empty_gt and (merge_example is None or len(
+                merge_example['gt_bboxes_3d']) == 0):
+            return None
+
+        points_num = merge_example['points_num']
+        # assign the merge_sample
+        for t in range(self.time_series):
+            examples[t]['points'] = merge_example['points'][
+                points_num[:t + 1].sum():points_num[:t + 2].sum()]
+            examples[t]['gt_bboxes_3d'] = merge_example['gt_bboxes_3d'][
+                boxes_num[:t + 1].sum():boxes_num[:t + 2].sum()]
+            examples[t]['gt_offset'] = examples[t]['gt_bboxes_3d'].tensor[:,
+                                                                          7:]
+            examples[t]['gt_bboxes_3d'] = LiDARInstance3DBoxes(
+                examples[t]['gt_bboxes_3d'].tensor[:, :7])
+            examples[t]['gt_labels_3d'] = merge_example['gt_labels_3d'][
+                boxes_num[:t + 1].sum():boxes_num[:t + 2].sum()]
+            examples[t] = self.format_pipeline(examples[t])
+
+        img_meta = examples[0]['img_metas'].data
+        for t in range(1, self.time_series):
+            examples[t]['img_metas'] = copy.deepcopy(img_meta)
+            examples[t]['img_metas']['pts_filename'] = input_dicts[t][
+                'pts_filename']
+            examples[t]['img_metas']['sample_idx'] = input_dicts[t][
+                'sample_idx']
+            examples[t]['img_metas']['pose'] = input_dicts[t]['pose']
+            examples[t]['img_metas'] = DC(
+                examples[t]['img_metas'], cpu_only=True)
+        return examples
 
     def drop_arrays_by_name(self, gt_names, used_classes):
         """Drop irrelevant ground truths by name.
@@ -642,10 +789,9 @@ class KittiTrackDataset(Custom3DDataset):
         # Post-processing
         # check box_preds_camera
         image_shape = box_preds.tensor.new_tensor(img_shape)
-        valid_cam_inds = ((box_preds_camera.tensor[:, 0] < image_shape[1]) &
-                          (box_preds_camera.tensor[:, 1] < image_shape[0]) &
-                          (box_preds_camera.tensor[:, 2] > 0) &
-                          (box_preds_camera.tensor[:, 3] > 0))
+        valid_cam_inds = ((box_2d_preds[:, 0] < image_shape[1]) &
+                          (box_2d_preds[:, 1] < image_shape[0]) &
+                          (box_2d_preds[:, 2] > 0) & (box_2d_preds[:, 3] > 0))
         # check box_preds
         limit_range = box_preds.tensor.new_tensor(self.pcd_limit_range)
         valid_pcd_inds = ((box_preds.center > limit_range[:3]) &

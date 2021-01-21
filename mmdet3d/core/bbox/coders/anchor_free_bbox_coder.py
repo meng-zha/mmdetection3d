@@ -126,4 +126,8 @@ class AnchorFreeBBoxCoder(PartialBinBasedBBoxCoder):
         results['dir_res_norm'] = dir_res_norm
         results['dir_res'] = dir_res_norm * (2 * np.pi / self.num_dir_bins)
 
+        # decode offset
+        if reg_preds_trans.shape[-1]>end:
+            results['offset'] = reg_preds_trans[...,start:start+2]
+
         return results

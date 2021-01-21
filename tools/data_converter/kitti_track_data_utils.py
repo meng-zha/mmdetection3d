@@ -1,9 +1,9 @@
 import pathlib
 import numpy as np
-from collections import OrderedDict
 import os
 import pandas as pd
 from skimage import io
+from mmdet3d.core.bbox import box_np_ops
 
 from tqdm import tqdm
 
@@ -111,6 +111,15 @@ def get_label_path(scene,
                                relative_path, exist_check)
 
 
+def get_poses_path(scene,
+                   prefix,
+                   training=True,
+                   relative_path=True,
+                   exist_check=True):
+    return get_scene_info_path(scene, prefix, "poses", ".txt", training,
+                               relative_path, exist_check)
+
+
 def get_calib_path(scene,
                    prefix,
                    training=True,
@@ -123,6 +132,7 @@ def get_calib_path(scene,
 def get_kitti_track_image_info(path,
                                training=True,
                                label_info=True,
+                               poses_info=False,
                                velodyne=False,
                                calib=False,
                                track=False,
@@ -237,6 +247,14 @@ def get_kitti_track_image_info(path,
             calib_info["Tr_imu_to_velo"] = Tr_imu_to_velo
             info["calib"] = calib_info
 
+        if poses_info:
+            poses_path = get_poses_path(scene_idx, path, training,
+                                        relative_path)
+            if relative_path:
+                poses_path = str(root_path / poses_path)
+            scene_poses = np.loadtxt(poses_path).reshape(-1, 4, 4)
+            info["poses"] = scene_poses
+
         if label_info:
             label_path = get_label_path(scene_idx, path, training,
                                         relative_path)
@@ -257,7 +275,6 @@ def get_kitti_track_image_info(path,
         frames_info = []
         for idx in tqdm(image_ids):
             # info of single frame in the scene
-            # TODO: need to prepare the prev and next frame
             single_info = {}
             annotations = None
 
@@ -276,9 +293,14 @@ def get_kitti_track_image_info(path,
                     img_path = str(root_path / img_path)
                 image_info["image_shape"] = np.array(
                     io.imread(img_path).shape[:2], dtype=np.int32)
+
             if label_info:
                 label = info["annos"][info["annos"]["frame"] == idx]
                 annotations = get_label_anno(np.array(label))
+
+            if poses_info:
+                pose = info["poses"][idx]
+                single_info["pose"] = pose
 
             if annotations is not None:
                 single_info["annos"] = annotations
@@ -296,6 +318,22 @@ def get_kitti_track_image_info(path,
             single_info["calib"] = calib_info
             single_info["track"] = track_info
             frames_info.append(single_info)
+
+        # generate offset label
+        if poses_info and track:
+            for idx in range(len(frames_info)):
+                cur_info = frames_info[idx]
+                prev_info = None
+                next_info = None
+                if cur_info["track"]["prev"] != 0:
+                    # the first frame
+                    prev_info = frames_info[idx - 1]
+
+                if cur_info["track"]["next"] != 0:
+                    # the last frame
+                    next_info = frames_info[idx + 1]
+
+                get_offset_anno(cur_info, prev_info, next_info)
 
         return frames_info
 
@@ -344,6 +382,62 @@ def get_label_anno(label):
     annotations['index'] = np.array(index, dtype=np.int32)
     annotations['group_ids'] = np.arange(num_gt, dtype=np.int32)
     return annotations
+
+
+def get_offset_anno(cur_info, prev_info, next_info):
+    '''
+    generate the offset of last frame 
+    We assume that the length of scene > 1
+    '''
+    calib = cur_info['calib']
+    rect = calib['R0_rect']
+    Trv2c = calib['Tr_velo_to_cam']
+
+    cur_annos = cur_info["annos"]
+    lidar_loc = box_np_ops.camera_to_lidar(cur_annos['location'], rect, Trv2c)
+    pad_loc = np.hstack(
+        [lidar_loc, np.ones((cur_annos["location"].shape[0], 1))])
+    global_loc = (pad_loc @ (cur_info["pose"].T))[:, :3]
+
+    cur_annos["prev"] = np.zeros_like(cur_annos["location"])
+    cur_annos["next"] = np.zeros_like(cur_annos["location"])
+
+    if prev_info is not None:
+        prev_annos = prev_info["annos"]
+        lidar_loc_prev = box_np_ops.camera_to_lidar(prev_annos['location'],
+                                                    rect, Trv2c)
+        pad_loc_prev = np.hstack(
+            [lidar_loc_prev,
+             np.ones((prev_annos["location"].shape[0], 1))])
+        global_loc_prev = (pad_loc_prev @ (prev_info["pose"].T))[:, :3]
+        for idx, track_id in enumerate(cur_annos["track_id"]):
+            if track_id == -1:  # Dontcare
+                continue
+            ind = np.where(prev_annos["track_id"] == track_id)[0]
+            if len(ind):
+                cur_annos["prev"][idx] = global_loc_prev[
+                    ind[0]] - global_loc[idx]
+
+    if next_info is None:
+        # the constant velocity model
+        cur_annos["next"] = -cur_annos["prev"]
+    else:
+        next_annos = next_info["annos"]
+        lidar_loc_next = box_np_ops.camera_to_lidar(next_annos['location'],
+                                                    rect, Trv2c)
+        pad_loc_next = np.hstack(
+            [lidar_loc_next,
+             np.ones((next_annos["location"].shape[0], 1))])
+        global_loc_next = (pad_loc_next @ (next_info["pose"].T))[:, :3]
+        for idx, track_id in enumerate(cur_annos["track_id"]):
+            if track_id == -1:  # Dontcare
+                continue
+            ind = np.where(next_annos["track_id"] == track_id)[0]
+            if len(ind):
+                cur_annos["next"][idx] = global_loc_next[
+                    ind[0]] - global_loc[idx]
+            else:
+                cur_annos["next"][idx] = -cur_annos["prev"][idx]
 
 
 def add_difficulty_to_annos(info):

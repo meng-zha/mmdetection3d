@@ -1,3 +1,4 @@
+from mmdet3d.core.points.lidar_points import LiDARPoints
 import numpy as np
 from mmcv import is_tuple_of
 from mmcv.utils import build_from_cfg
@@ -482,6 +483,14 @@ class ObjectRangeFilter(object):
         input_dict['gt_bboxes_3d'] = gt_bboxes_3d
         input_dict['gt_labels_3d'] = gt_labels_3d
 
+        boxes_num = input_dict.get('boxes_num', None)
+        if boxes_num is not None:
+            valid_boxes_num = [0] + [
+                mask[boxes_num[:t].sum():boxes_num[:t + 1].sum()].sum()
+                for t in range(1,boxes_num.shape[0])
+            ]
+            input_dict['boxes_num'] = np.array(valid_boxes_num).astype(np.int32)
+
         return input_dict
 
     def __repr__(self):
@@ -516,6 +525,13 @@ class PointsRangeFilter(object):
         points_mask = points.in_range_3d(self.pcd_range)
         clean_points = points[points_mask]
         input_dict['points'] = clean_points
+        points_num = input_dict.get('points_num', None)
+        if points_num is not None:
+            valid_points_num = [0] + [
+                points_mask[points_num[:t].sum():points_num[:t + 1].sum()].sum()
+                for t in range(1,points_num.shape[0])
+            ]
+            input_dict['points_num'] = np.array(valid_points_num).astype(np.int32)
         return input_dict
 
     def __repr__(self):
@@ -618,18 +634,37 @@ class IndoorPointSample(object):
                 and 'pts_semantic_mask' keys are updated in the result dict.
         """
         points = results['points']
-        points, choices = self.points_random_sampling(
-            points, self.num_points, return_choices=True)
+        points_num = results.get('points_num', None)
+
+        if points_num is None:
+            points, choices = self.points_random_sampling(
+                points, self.num_points, return_choices=True)
+            results['points'] = points
+        else:
+            points_res = []
+            choices = []
+            for t in range(1,points_num.shape[0]):
+                points_t, choices_t = self.points_random_sampling(
+                    points[points_num[:t].sum():points_num[:t + 1].sum()],
+                    self.num_points,
+                    return_choices=True)
+                points_res.append(points_t)
+                choices.append(choices_t + t * self.num_points)
+            results['points_num'] = np.array([0] + [self.num_points] *
+                                            (points_num.shape[0] - 1)).astype(
+                                                np.int32)
+            results['points'] = LiDARPoints.cat(points_res)
+            choices = np.concatenate(choices, axis=-1)
 
         pts_instance_mask = results.get('pts_instance_mask', None)
         pts_semantic_mask = results.get('pts_semantic_mask', None)
-        results['points'] = points
 
         if pts_instance_mask is not None and pts_semantic_mask is not None:
             pts_instance_mask = pts_instance_mask[choices]
             pts_semantic_mask = pts_semantic_mask[choices]
             results['pts_instance_mask'] = pts_instance_mask
             results['pts_semantic_mask'] = pts_semantic_mask
+
 
         return results
 
@@ -687,6 +722,13 @@ class BackgroundPointsFilter(object):
                                       enlarge_foreground_masks)
 
         input_dict['points'] = points[valid_masks]
+        points_num = input_dict.get('points_num', None)
+        if points_num is not None:
+            valid_points_num = [0] + [
+                valid_masks[points_num[:t].sum():points_num[:t + 1].sum()].sum()
+                for t in range(1,points_num.shape[0])
+            ]
+            input_dict['points_num'] = np.array(valid_points_num).astype(np.int32)
         pts_instance_mask = input_dict.get('pts_instance_mask', None)
         if pts_instance_mask is not None:
             input_dict['pts_instance_mask'] = pts_instance_mask[valid_masks]

@@ -51,7 +51,7 @@ class DefaultFormatBundle(object):
                 results['img'] = DC(to_tensor(img), stack=True)
         for key in [
                 'proposals', 'gt_bboxes', 'gt_bboxes_ignore', 'gt_labels',
-                'gt_labels_3d', 'pts_instance_mask', 'pts_semantic_mask'
+                'gt_labels_3d', 'pts_instance_mask', 'pts_semantic_mask', 'gt_offset'
         ]:
             if key not in results:
                 continue
@@ -138,7 +138,7 @@ class Collect3D(object):
                             'box_mode_3d', 'box_type_3d', 'img_norm_cfg',
                             'rect', 'Trv2c', 'P2', 'pcd_trans', 'sample_idx',
                             'pcd_scale_factor', 'pcd_rotation',
-                            'pts_filename')):
+                            'pts_filename','pose','track')):
         self.keys = keys
         self.meta_keys = meta_keys
 
@@ -219,6 +219,7 @@ class DefaultFormatBundle3D(DefaultFormatBundle):
                 gt_bboxes_3d_mask = results['gt_bboxes_3d_mask']
                 results['gt_bboxes_3d'] = results['gt_bboxes_3d'][
                     gt_bboxes_3d_mask]
+                results['gt_offset']= results['gt_offset'][gt_bboxes_3d_mask]
                 if 'gt_names_3d' in results:
                     results['gt_names_3d'] = results['gt_names_3d'][
                         gt_bboxes_3d_mask]
