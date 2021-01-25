@@ -11,7 +11,7 @@ from os import path as osp
 
 from mmdet.datasets import DATASETS
 from torch._C import dtype
-from ..core import show_result
+from ..core import show_result, show_gt_bboxes
 from ..core.bbox import Box3DMode, box_np_ops, LiDARInstance3DBoxes, points_cam2img
 from ..core.points import LiDARPoints
 from .custom_3d import Custom3DDataset
@@ -816,6 +816,26 @@ class KittiTrackDataset(Custom3DDataset):
                 label_preds=np.zeros([0, 4]),
                 sample_idx=sample_idx,
             )
+    
+    def show_gt(self,out_dir):
+        """gt_bbox visualization.
+
+        Args:
+            out_dir (str): Output directory of visualization result.
+        """
+        assert out_dir is not None, 'Expect out_dir, got none.'
+        prog_bar = mmcv.ProgressBar(len(self.data_infos))
+        for i in range(len(self.data_infos)):
+            data_info = self.data_infos[i]
+            pts_path = data_info['point_cloud']['velodyne_path']
+            file_name = pts_path.replace('/','-').split('.')[0]
+            # for now we convert points into depth mode
+            gt_bboxes = self.get_ann_info(i)['gt_bboxes_3d'].tensor
+            gt_bboxes = Box3DMode.convert(gt_bboxes, Box3DMode.LIDAR,
+                                          Box3DMode.DEPTH)
+            gt_bboxes[..., 2] += gt_bboxes[..., 5] / 2
+            show_gt_bboxes(gt_bboxes,out_dir,file_name)
+            prog_bar.update()
 
     def show(self, results, out_dir):
         """Results visualization.

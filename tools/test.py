@@ -38,6 +38,7 @@ def parse_args():
         help='evaluation metrics, which depends on the dataset, e.g., "bbox",'
         ' "segm", "proposal" for COCO, and "mAP", "recall" for PASCAL VOC')
     parser.add_argument('--show', action='store_true', help='show results')
+    parser.add_argument('--show_gt', action='store_true', help='show gt bboxes')
     parser.add_argument(
         '--show-dir', help='directory where results will be saved')
     parser.add_argument(
@@ -109,6 +110,10 @@ def main():
         workers_per_gpu=cfg.data.workers_per_gpu,
         dist=distributed,
         shuffle=False)
+
+    # show the gt_bboxes_3d
+    if args.show_gt:
+        dataset.show_gt(os.path.join(args.show_dir,'gt_bboxes_3d'))
 
     # build the model and load checkpoint
     model = build_detector(cfg.model, train_cfg=None, test_cfg=cfg.test_cfg)

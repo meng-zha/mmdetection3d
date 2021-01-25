@@ -38,7 +38,8 @@ def single_gpu_test(model, data_loader, show=False, out_dir=None):
     for i, data in enumerate(data_loader):
         with torch.no_grad():
             if len(results) == 0 or data['img_metas'][0].data[0][0]['track']['prev'] == 0:
-                print(data['img_metas'][0].data[0][0]['pts_filename'])
+                hidden_dict = None
+            if not model.module.test_cfg.get('with_hidden',None):
                 hidden_dict = None
             result, hidden_dict = model(
                 return_loss=False,
@@ -47,7 +48,7 @@ def single_gpu_test(model, data_loader, show=False, out_dir=None):
                 hidden_dict=hidden_dict)
 
         if show:
-            model.module.show_results(data, result, out_dir)
+            model.module.show_results(data, result, out_dir,hidden_dict['show_xyz'])
 
         results.extend(result)
 

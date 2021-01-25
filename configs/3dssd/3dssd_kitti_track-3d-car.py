@@ -106,12 +106,13 @@ model = dict(
 # test_cfg = dict(with_hidden=False)
 
 # optimizer
-lr = 0.002 # max learning rate
+lr = 0.001 # max learning rate
 optimizer = dict(type='AdamW', lr=lr, weight_decay=0)
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 lr_config = dict(policy='step', warmup=None, step=[80, 120])
 # runtime settings
-total_epochs = 150
+total_epochs = 50
+load_from = data_root+'outputs/3dssd_baseline_resume_from_rnn_with_sample_20210120_130748/latest.pth'
 
 # yapf:disable
 log_config = dict(

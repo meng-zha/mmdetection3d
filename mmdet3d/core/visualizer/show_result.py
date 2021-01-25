@@ -68,7 +68,7 @@ def _write_oriented_bbox(scene_bbox, out_filename):
     return
 
 
-def show_result(points, gt_bboxes, pred_bboxes, out_dir, filename):
+def show_result(points, gt_bboxes, pred_bboxes, out_dir, filename, hidden_points=None):
     """Convert results into format that is directly readable for meshlab.
 
     Args:
@@ -88,7 +88,17 @@ def show_result(points, gt_bboxes, pred_bboxes, out_dir, filename):
     if points is not None:
         _write_ply(points, osp.join(result_path, f'{filename}_points.obj'))
 
+    if hidden_points is not None:
+        _write_ply(hidden_points, osp.join(result_path, f'{filename}_hidden_points.obj'))
+
     if pred_bboxes is not None:
         pred_bboxes[:, 6] *= -1
         _write_oriented_bbox(pred_bboxes,
                              osp.join(result_path, f'{filename}_pred.ply'))
+
+
+def show_gt_bboxes(gt_bboxes,out_dir,filename):
+    mmcv.mkdir_or_exist(out_dir)
+    gt_bboxes[:, 6] *= -1
+    _write_oriented_bbox(gt_bboxes,
+                            osp.join(out_dir, f'{filename}_gt.ply'))

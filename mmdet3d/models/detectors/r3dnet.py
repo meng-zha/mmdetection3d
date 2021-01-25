@@ -167,7 +167,7 @@ class R3DNet(SingleStage3DDetector):
         #     pose = torch.tensor(
         #         img_metas[i]['pose']).to(device=hidden_xyz.device).float()
         #     hidden_xyz[i] = (pad_hidden_xyz[i] @ pose.T)[..., :3]
-        hidden_xyz[..., :2] += hidden_offset
+        # hidden_xyz[..., :2] += hidden_offset
         hidden_dict['xyz'] = hidden_xyz
         return losses, hidden_dict
 
@@ -193,6 +193,7 @@ class R3DNet(SingleStage3DDetector):
         x = self.extract_feat(points_cat)
         if not self.test_cfg['with_hidden']:
             hidden_dict = None
+        used_hidden = None
         if hidden_dict is not None:
             hidden_xyz = hidden_dict['xyz']
             pad_hidden_xyz = torch.cat([
@@ -211,6 +212,7 @@ class R3DNet(SingleStage3DDetector):
             hidden_dict['indices'] = torch.arange(
                 num_points, num_points + hidden_dict['xyz'].shape[1]).to(
                     device=hidden_xyz.device).unsqueeze(0).repeat(batch, 1)
+            used_hidden = hidden_dict['xyz'].detach().clone()
 
         points_cat = torch.stack(points)
         bbox_preds = self.bbox_head(x, self.test_cfg.sample_mod, hidden_dict)
@@ -221,11 +223,15 @@ class R3DNet(SingleStage3DDetector):
             for bboxes, scores, labels, _ in bbox_list
         ]
 
+        hidden_dict = {'xyz': None, 'features': None}
+        if used_hidden is not None:
+            hidden_dict['show_xyz'] = used_hidden
+        else:
+            hidden_dict['show_xyz'] = bbox_preds['hidden_points'].detach().clone()
         hidden_xyz = bbox_preds['hidden_points']
         # the batchsize of test must be 1
         hidden_offset, assignment = self.bbox_head.assign_seeds(
             bbox_results, hidden_xyz, bbox_list)
-        hidden_dict = {'xyz': None, 'features': None}
         hidden_dict['features'] = bbox_preds['hidden_features']
         pad_hidden_xyz = torch.cat([
             hidden_xyz,
@@ -236,7 +242,7 @@ class R3DNet(SingleStage3DDetector):
             pose = torch.tensor(
                 img_metas[i]['pose']).to(device=hidden_xyz.device).float()
             hidden_xyz[i] = (pad_hidden_xyz[i] @ pose.T)[..., :3]
-        hidden_xyz[..., :2] += torch.stack(hidden_offset, dim=0)
+        # hidden_xyz[..., :2] += torch.stack(hidden_offset, dim=0)
         hidden_dict['xyz'] = hidden_xyz
 
         return bbox_results, hidden_dict

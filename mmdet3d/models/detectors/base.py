@@ -60,7 +60,7 @@ class Base3DDetector(BaseDetector):
         else:
             return self.forward_test(**kwargs)
 
-    def show_results(self, data, result, out_dir):
+    def show_results(self, data, result, out_dir, hidden=None):
         """Results visualization.
 
         Args:
@@ -68,6 +68,7 @@ class Base3DDetector(BaseDetector):
             result (list[dict]): Prediction results.
             out_dir (str): Output directory of visualization result.
         """
+        hidden_points = None
         for batch_id in range(len(result)):
             if isinstance(data['points'][0], DC):
                 points = data['points'][0]._data[0][batch_id].numpy()
@@ -76,6 +77,8 @@ class Base3DDetector(BaseDetector):
             else:
                 ValueError(f"Unsupported data type {type(data['points'][0])} "
                            f'for visualization!')
+            if isinstance(hidden,torch.Tensor):
+                hidden_points = hidden[batch_id]
             if isinstance(data['img_metas'][0], DC):
                 pts_filename = data['img_metas'][0]._data[0][batch_id][
                     'pts_filename']
@@ -88,7 +91,8 @@ class Base3DDetector(BaseDetector):
                 ValueError(
                     f"Unsupported data type {type(data['img_metas'][0])} "
                     f'for visualization!')
-            file_name = osp.split(pts_filename)[-1].split('.')[0]
+            file_name = pts_filename.replace('/','-').split('.')[0]
+            # file_name = osp.split(pts_filename)[-1].split('.')[0]
 
             assert out_dir is not None, 'Expect out_dir, got none.'
 
@@ -99,13 +103,17 @@ class Base3DDetector(BaseDetector):
                 pred_bboxes[..., 2] += pred_bboxes[..., 5] / 2
             elif (box_mode_3d == Box3DMode.CAM) or (box_mode_3d
                                                     == Box3DMode.LIDAR):
-                points = points[..., [1, 0, 2]]
-                points[..., 0] *= -1
-                pred_bboxes = Box3DMode.convert(pred_bboxes, box_mode_3d,
-                                                Box3DMode.DEPTH)
-                pred_bboxes[..., 2] += pred_bboxes[..., 5] / 2
+                pass
+                # points = points[..., [1, 0, 2]]
+                # points[..., 0] *= -1
+                # if hidden_points is not None:
+                #     hidden_points = hidden_points[..., [1, 0, 2]]
+                #     hidden_points[..., 0] *= -1
+                # pred_bboxes = Box3DMode.convert(pred_bboxes, box_mode_3d,
+                #                                 Box3DMode.DEPTH)
+                # pred_bboxes[..., 2] += pred_bboxes[..., 5] / 2
             else:
                 ValueError(
                     f'Unsupported box_mode_3d {box_mode_3d} for convertion!')
 
-            show_result(points, None, pred_bboxes, out_dir, file_name)
+            show_result(points, None, pred_bboxes, out_dir, file_name, hidden_points)
