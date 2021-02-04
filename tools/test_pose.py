@@ -26,40 +26,41 @@ def _write_ply(points, out_filename):
 
 
 if __name__ == "__main__":
+    ckp_path = '../data/kitti_track/outputs/3dssd_kitti_t2_pretrain_forehidden_20210125_200513/visulization/'
+    p1,p2 = 0, 100
     # points_1 = np.fromfile('../data/kitti_track/training/velodyne/0000_reduced/000000.bin',np.float32).reshape(-1,4)[:,:3]
     # points_2 = np.fromfile('../data/kitti_track/training/velodyne/0000_reduced/000015.bin',np.float32).reshape(-1,4)[:,:3]
-    points_1 = np.asarray(o3d.io.read_triangle_mesh(
-        '../data/kitti_track/outputs/3dssd_kitti_track_time_2_pretrained_20210122_104049/visualization/'\
+    points_1 = np.asarray(o3d.io.read_triangle_mesh(ckp_path+
             'data-kitti_track-training-velodyne-0000-000000/data-kitti_track-training-velodyne-0000-000000_hidden_points.obj'
     ).vertices)
     points_2 = np.asarray(o3d.io.read_triangle_mesh(
-        '../data/kitti_track/outputs/3dssd_kitti_track_time_2_pretrained_20210122_104049/visualization/'\
-            'data-kitti_track-training-velodyne-0000-000050/data-kitti_track-training-velodyne-0000-000050_hidden_points.obj'
+        ckp_path+
+            'data-kitti_track-training-velodyne-0000-000100/data-kitti_track-training-velodyne-0000-000100_hidden_points.obj'
     ).vertices)
     pose = np.loadtxt('../data/kitti_track/training/poses/0000.txt').reshape(
         -1, 4, 4)
-    pose1 = pose[0]
-    pose2 = pose[49]
+    pose1 = pose[p1]
+    pose2 = pose[p2]
     pad_1 = np.hstack([points_1, np.ones((points_1.shape[0], 1))])
     # points_1 = (pad_1@pose1.T)[:,:3]
     pad_2 = np.hstack([points_2, np.ones((points_2.shape[0], 1))])
     points_2 = (pad_2 @ pose2.T @ np.linalg.inv(pose1.T))[:, :3]
     # points_2 = (pad_2@pose2.T)[:,:3]
-    _write_ply(points_1, '../work_dirs/hidden_points_1.obj')
-    _write_ply(points_2, '../work_dirs/hidden_points_5.obj')
+    _write_ply(points_1, f'../work_dirs/hidden_points_{p1}.obj')
+    _write_ply(points_2, f'../work_dirs/hidden_points_{p2}.obj')
 
     points_1 = np.asarray(o3d.io.read_triangle_mesh(
-        '../data/kitti_track/outputs/3dssd_kitti_track_time_2_pretrained_20210122_104049/visualization/'\
+        ckp_path+
             'data-kitti_track-training-velodyne-0000-000000/data-kitti_track-training-velodyne-0000-000000_points.obj'
     ).vertices)
     points_2 = np.asarray(o3d.io.read_triangle_mesh(
-        '../data/kitti_track/outputs/3dssd_kitti_track_time_2_pretrained_20210122_104049/visualization/'\
-            'data-kitti_track-training-velodyne-0000-000050/data-kitti_track-training-velodyne-0000-000050_points.obj'
+        ckp_path+
+            'data-kitti_track-training-velodyne-0000-000100/data-kitti_track-training-velodyne-0000-000100_points.obj'
     ).vertices)
     pad_1 = np.hstack([points_1, np.ones((points_1.shape[0], 1))])
     # points_1 = (pad_1@pose1.T)[:,:3]
     pad_2 = np.hstack([points_2, np.ones((points_2.shape[0], 1))])
     points_2 = (pad_2 @ pose2.T @ np.linalg.inv(pose1.T))[:, :3]
     # points_2 = (pad_2@pose2.T)[:,:3]
-    _write_ply(points_1, '../work_dirs/points_1.obj')
-    _write_ply(points_2, '../work_dirs/points_5.obj')
+    _write_ply(points_1, f'../work_dirs/points_{p1}.obj')
+    _write_ply(points_2, f'../work_dirs/points_{p2}.obj')

@@ -88,9 +88,9 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=8,
+    samples_per_gpu=2,
     workers_per_gpu=8,
-    train=dict(dataset=dict(pipeline=train_pipeline,time_series=2)),
+    train=dict(dataset=dict(pipeline=train_pipeline,time_series=6)),
     val=dict(pipeline=test_pipeline),
     test=dict(pipeline=test_pipeline))
 
@@ -111,8 +111,8 @@ optimizer = dict(type='AdamW', lr=lr, weight_decay=0)
 optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 lr_config = dict(policy='step', warmup=None, step=[80, 120])
 # runtime settings
-total_epochs = 50
-load_from = data_root+'outputs/3dssd_baseline_resume_from_rnn_with_sample_20210120_130748/latest.pth'
+total_epochs = 150
+# load_from = data_root+'outputs/3dssd_baseline_resume_from_rnn_with_sample_20210120_130748/latest.pth'
 
 # yapf:disable
 log_config = dict(

@@ -82,11 +82,12 @@ model = dict(
 
 # model training and testing settings
 train_cfg = dict(
-    sample_mod='spec', pos_distance_thr=10.0, expand_dims_length=0.05)
+    sample_mod='spec', pos_distance_thr=10.0, expand_dims_length=0.05, keep_thr = 0.01)
 test_cfg = dict(
     nms_cfg=dict(type='nms', iou_thr=0.1),
     sample_mod='spec',
     score_thr=0.0,
+    keep_thr=0.01,
     per_class_proposal=True,
     expand_dims_length=0.05,
     with_hidden=True,

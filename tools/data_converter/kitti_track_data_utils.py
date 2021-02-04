@@ -267,7 +267,7 @@ def get_kitti_track_image_info(path,
                     "frame", "track_id", "type", "truncated", "occluded",
                     "alpha", "bbox_left", "bbox_top", "bbox_right",
                     "bbox_bottom", "height", "width", "length", "x", "y", "z",
-                    "rotation_y"
+                    "rotation_y","real"
                 ])
             df.insert(loc=0, column="scene", value=scene_idx)
             info["annos"] = df
@@ -296,7 +296,7 @@ def get_kitti_track_image_info(path,
 
             if label_info:
                 label = info["annos"][info["annos"]["frame"] == idx]
-                annotations = get_label_anno(np.array(label))
+                annotations = get_label_anno(np.array(label)[:,:-1])
 
             if poses_info:
                 pose = info["poses"][idx]

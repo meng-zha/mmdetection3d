@@ -156,7 +156,6 @@ class R3DNet(SingleStage3DDetector):
         hidden_offset = bbox_preds['offset']
         hidden_dict = {'xyz': None, 'features': None}
         hidden_xyz = bbox_preds['hidden_points']
-        hidden_dict['features'] = bbox_preds['hidden_features']
 
         # pad_hidden_xyz = torch.cat([
         #     hidden_xyz,
@@ -167,8 +166,15 @@ class R3DNet(SingleStage3DDetector):
         #     pose = torch.tensor(
         #         img_metas[i]['pose']).to(device=hidden_xyz.device).float()
         #     hidden_xyz[i] = (pad_hidden_xyz[i] @ pose.T)[..., :3]
-        # hidden_xyz[..., :2] += hidden_offset
+        hidden_xyz[..., :2] += hidden_offset
+
+        # filter background seed points
+        probablity = torch.clamp(torch.sigmoid(bbox_preds['obj_scores'])/self.train_cfg['keep_thr'],0,1)
+        ind = torch.bernoulli(1-probablity).to(bool).squeeze(1).unsqueeze(2)
+        hidden_xyz[ind.expand(-1,-1,hidden_xyz.shape[2])] = 0
         hidden_dict['xyz'] = hidden_xyz
+        hidden_dict['features'] = bbox_preds['hidden_features']
+        hidden_dict['features'][ind.expand(-1,-1,bbox_preds['hidden_features'].shape[2])] = 0
         return losses, hidden_dict
 
     def simple_test(self,
@@ -232,7 +238,6 @@ class R3DNet(SingleStage3DDetector):
         # the batchsize of test must be 1
         hidden_offset, assignment = self.bbox_head.assign_seeds(
             bbox_results, hidden_xyz, bbox_list)
-        hidden_dict['features'] = bbox_preds['hidden_features']
         pad_hidden_xyz = torch.cat([
             hidden_xyz,
             hidden_xyz.new_ones(hidden_xyz.shape[0], hidden_xyz.shape[1], 1)
@@ -242,8 +247,15 @@ class R3DNet(SingleStage3DDetector):
             pose = torch.tensor(
                 img_metas[i]['pose']).to(device=hidden_xyz.device).float()
             hidden_xyz[i] = (pad_hidden_xyz[i] @ pose.T)[..., :3]
-        # hidden_xyz[..., :2] += torch.stack(hidden_offset, dim=0)
+        hidden_xyz[..., :2] += torch.stack(hidden_offset, dim=0)
+
+        # filter background seed points
+        probablity = torch.clamp(torch.sigmoid(bbox_preds['obj_scores'])/self.test_cfg['keep_thr'],0,1)
+        ind = torch.bernoulli(1-probablity).to(bool).squeeze(1).unsqueeze(2)
+        hidden_xyz[ind.expand(-1,-1,hidden_xyz.shape[2])] = 0
         hidden_dict['xyz'] = hidden_xyz
+        hidden_dict['features'] = bbox_preds['hidden_features']
+        hidden_dict['features'][ind.expand(-1,-1,bbox_preds['hidden_features'].shape[2])] = 0
 
         return bbox_results, hidden_dict
 

@@ -369,6 +369,7 @@ class R3D3DHead(R3DVoteHead):
         dir_class_targets = dir_class_targets[assignment]
         dir_res_targets = dir_res_targets[assignment]
         corner3d_targets = gt_corner3d[assignment]
+        hidden_offset = gt_offset[assignment] # hidden_offset targets
 
         top_center_targets = center_targets.clone()
         top_center_targets[:, 2] += size_res_targets[:, 2]
@@ -425,12 +426,7 @@ class R3D3DHead(R3DVoteHead):
 
         vote_targets = gt_bboxes_3d.gravity_center
         vote_targets = vote_targets[vote_assignment] - seed_points
-
-        # hidden_offset targets
-        assert gt_offset.shape[0] == len(gt_bboxes_3d)
-        hidden_offset = gt_offset[vote_assignment]
         vote_mask = vote_mask.max(1)[0] > 0
-        hidden_offset[~vote_mask] = 0
 
         return (vote_targets, center_targets, size_res_targets,
                 dir_class_targets, dir_res_targets, mask_targets,
