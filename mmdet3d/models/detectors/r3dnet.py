@@ -156,25 +156,23 @@ class R3DNet(SingleStage3DDetector):
         hidden_offset = bbox_preds['offset']
         hidden_dict = {'xyz': None, 'features': None}
         hidden_xyz = bbox_preds['hidden_points']
-
-        # pad_hidden_xyz = torch.cat([
-        #     hidden_xyz,
-        #     hidden_xyz.new_ones(hidden_xyz.shape[0], hidden_xyz.shape[1], 1)
-        # ],
-        #                            dim=2)
-        # for i in range(batch):
-        #     pose = torch.tensor(
-        #         img_metas[i]['pose']).to(device=hidden_xyz.device).float()
-        #     hidden_xyz[i] = (pad_hidden_xyz[i] @ pose.T)[..., :3]
         hidden_xyz[..., :2] += hidden_offset
 
-        # filter background seed points
-        probablity = torch.clamp(torch.sigmoid(bbox_preds['obj_scores'])/self.train_cfg['keep_thr'],0,1)
-        ind = torch.bernoulli(1-probablity).to(bool).squeeze(1).unsqueeze(2)
-        hidden_xyz[ind.expand(-1,-1,hidden_xyz.shape[2])] = 0
-        hidden_dict['xyz'] = hidden_xyz
-        hidden_dict['features'] = bbox_preds['hidden_features']
-        hidden_dict['features'][ind.expand(-1,-1,bbox_preds['hidden_features'].shape[2])] = 0
+        # filter background seed points by topk
+        # probablity = torch.clamp(torch.sigmoid(bbox_preds['obj_scores'])/self.train_cfg['keep_thr'],0,1)
+        # ind = torch.bernoulli(1-probablity).to(bool)
+        # hidden_xyz[ind.transpose(1,2).expand(-1,-1,hidden_xyz.shape[2])] = 0
+        # hidden_dict['xyz'] = hidden_xyz
+        # hidden_dict['features'] = bbox_preds['hidden_features']
+        # hidden_dict['features'][ind.expand(-1,bbox_preds['hidden_features'].shape[2],-1)] = 0
+        ind = torch.topk(bbox_preds['obj_scores'],
+                         int(self.train_cfg['keep_thr'] * hidden_xyz.shape[1]),
+                         2)[1]
+        hidden_dict['xyz'] = torch.gather(
+            hidden_xyz, 1, ind.transpose(1,2).expand(-1, -1, hidden_xyz.shape[2]))
+        hidden_dict['features'] = torch.gather(
+            bbox_preds['hidden_features'], 2,
+            ind.expand(-1, bbox_preds['hidden_features'].shape[2], -1))
         return losses, hidden_dict
 
     def simple_test(self,
@@ -233,7 +231,8 @@ class R3DNet(SingleStage3DDetector):
         if used_hidden is not None:
             hidden_dict['show_xyz'] = used_hidden
         else:
-            hidden_dict['show_xyz'] = bbox_preds['hidden_points'].detach().clone()
+            hidden_dict['show_xyz'] = bbox_preds['hidden_points'].detach(
+            ).clone()
         hidden_xyz = bbox_preds['hidden_points']
         # the batchsize of test must be 1
         hidden_offset, assignment = self.bbox_head.assign_seeds(
@@ -249,13 +248,21 @@ class R3DNet(SingleStage3DDetector):
             hidden_xyz[i] = (pad_hidden_xyz[i] @ pose.T)[..., :3]
         hidden_xyz[..., :2] += torch.stack(hidden_offset, dim=0)
 
-        # filter background seed points
-        probablity = torch.clamp(torch.sigmoid(bbox_preds['obj_scores'])/self.test_cfg['keep_thr'],0,1)
-        ind = torch.bernoulli(1-probablity).to(bool).squeeze(1).unsqueeze(2)
-        hidden_xyz[ind.expand(-1,-1,hidden_xyz.shape[2])] = 0
-        hidden_dict['xyz'] = hidden_xyz
-        hidden_dict['features'] = bbox_preds['hidden_features']
-        hidden_dict['features'][ind.expand(-1,-1,bbox_preds['hidden_features'].shape[2])] = 0
+        # filter background seed points by topk
+        # probablity = torch.clamp(torch.sigmoid(bbox_preds['obj_scores'])/self.test_cfg['keep_thr'],0,1)
+        # ind = torch.bernoulli(1-probablity).to(bool)
+        # hidden_xyz[ind.transpose(1,2).expand(-1,-1,hidden_xyz.shape[2])] = 0
+        # hidden_dict['xyz'] = hidden_xyz
+        # hidden_dict['features'] = bbox_preds['hidden_features']
+        # hidden_dict['features'][ind.expand(-1,bbox_preds['hidden_features'].shape[2],-1)] = 0
+        ind = torch.topk(bbox_preds['obj_scores'],
+                         int(self.test_cfg['keep_thr'] * hidden_xyz.shape[1]),
+                         2)[1]
+        hidden_dict['xyz'] = torch.gather(
+            hidden_xyz, 1, ind.transpose(1,2).expand(-1, -1, hidden_xyz.shape[2]))
+        hidden_dict['features'] = torch.gather(
+            bbox_preds['hidden_features'], 2,
+            ind.expand(-1, bbox_preds['hidden_features'].shape[2], -1))
 
         return bbox_results, hidden_dict
 

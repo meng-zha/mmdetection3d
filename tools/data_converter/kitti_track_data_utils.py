@@ -363,7 +363,7 @@ def get_label_anno(label):
         'track_id': []
     })
     annotations['track_id'] = label[:, 2].astype(float)
-    num_objects = len(label[:, 3] != 'DontCare')
+    num_objects = (label[:, 3] != 'DontCare').sum()
     annotations['name'] = label[:, 3]
     num_gt = len(annotations['name'])
     annotations['truncated'] = label[:, 4].astype(float)

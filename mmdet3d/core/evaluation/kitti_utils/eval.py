@@ -158,7 +158,7 @@ def d3_box_overlap(boxes, qboxes, criterion=-1):
     return rinc
 
 
-@numba.jit(nopython=True)
+# @numba.jit(nopython=True)
 def compute_statistics_jit(overlaps,
                            gt_datas,
                            dt_datas,
@@ -171,6 +171,7 @@ def compute_statistics_jit(overlaps,
                            compute_fp=False,
                            compute_aos=False):
 
+    import pdb;pdb.set_trace()
     det_size = dt_datas.shape[0]
     gt_size = gt_datas.shape[0]
     dt_scores = dt_datas[:, -1]
@@ -694,7 +695,7 @@ def kitti_eval(gt_annos,
             pred_alpha = True
             break
     for anno in gt_annos:
-        if len(anno['alpha']>0) and anno['alpha'][0] != -10:
+        if len(anno['alpha'])>0 and anno['alpha'][0] != -10:
             valid_alpha_gt = True
             break
     compute_aos = (pred_alpha and valid_alpha_gt)

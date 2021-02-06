@@ -434,7 +434,7 @@ class R3D3DHead(R3DVoteHead):
                 negative_mask, hidden_offset)
 
     def get_bboxes(self, points, bbox_preds, input_metas, rescale=False):
-        """Generate bboxes from sdd3d head predictions.
+        """Generate bboxes from r3d3d head predictions.
 
         Args:
             points (torch.Tensor): Input points.
@@ -591,8 +591,12 @@ class R3D3DHead(R3DVoteHead):
                 enlarged_gt_bboxes_3d, seed_points[b])
 
             # hidden_offset targets
-            hidden_offset.append(offset[b][3][vote_assignment])
-            vote_mask = vote_mask.max(1)[0] > 0
-            hidden_offset[b][~vote_mask] = 0
+            if len(bboxes_3d[b]['boxes_3d'])==0:
+                hidden_offset.append(seed_points[b].new_zeros(seed_points.shape[0],2))
+            else:
+                hidden_offset.append(offset[b][3][vote_assignment])
+                vote_mask = vote_mask.max(1)[0] > 0
+                hidden_offset[b][~vote_mask] = 0
+                vote_assignment[~vote_mask] = -1
             assignment.append(vote_assignment)
         return hidden_offset, assignment
