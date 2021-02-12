@@ -163,9 +163,9 @@ class R3DVoteHead(nn.Module):
         if hidden_dict is None:
             # not the first frame
             hidden_dict = {
-                'xyz': seed_points.clone(),
-                'features': seed_features.clone(),
-                'indices': seed_indices.clone()
+                'xyz': seed_points[:, :seed_num].clone(),
+                'features': seed_features[..., :seed_num].clone(),
+                'indices': seed_indices[:, :seed_num].clone()
             }
 
         hidden_points = torch.cat(

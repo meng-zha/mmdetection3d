@@ -1,4 +1,3 @@
-import pdb
 import torch
 from mmcv.ops.nms import batched_nms
 from mmcv.runner import force_fp32
