@@ -108,6 +108,8 @@ class KittiTrackDataset(Custom3DDataset):
             str: Name of the point cloud file.
         """
         pts_filename = osp.join(self.data_root, pts_path)
+        if 'reduced' in self.pts_prefix:
+            pts_filename = pts_filename[:-11] + '_reduced' + pts_filename[-11:]
         return pts_filename
 
     def get_data_info(self, index):
