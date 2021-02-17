@@ -49,6 +49,7 @@ class R3D3DHead(R3DVoteHead):
                  vote_aggregation_cfg=None,
                  hidden_module_cfg=None,
                  pred_layer_cfg=None,
+                 sem_layer_cfg=None,
                  conv_cfg=dict(type='Conv1d'),
                  norm_cfg=dict(type='BN1d'),
                  act_cfg=dict(type='ReLU'),
@@ -57,6 +58,7 @@ class R3D3DHead(R3DVoteHead):
                  dir_class_loss=None,
                  dir_res_loss=None,
                  offset_loss=None,
+                 sem_loss=None,
                  size_res_loss=None,
                  corner_loss=None,
                  vote_loss=None):
@@ -69,6 +71,7 @@ class R3D3DHead(R3DVoteHead):
             hidden_module_cfg=hidden_module_cfg,
             vote_aggregation_cfg=vote_aggregation_cfg,
             pred_layer_cfg=pred_layer_cfg,
+            sem_layer_cfg=sem_layer_cfg,
             conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             objectness_loss=objectness_loss,
@@ -78,7 +81,7 @@ class R3D3DHead(R3DVoteHead):
             offset_loss=offset_loss,
             size_class_loss=None,
             size_res_loss=size_res_loss,
-            semantic_loss=None)
+            semantic_loss=sem_loss)
 
         self.corner_loss = build_loss(corner_loss)
         self.vote_loss = build_loss(vote_loss)
@@ -107,9 +110,9 @@ class R3D3DHead(R3DVoteHead):
             torch.Tensor: Features of input points.
             torch.Tensor: Indices of input points.
         """
-        seed_points = feat_dict['sa_xyz'][-1]
-        seed_features = feat_dict['sa_features'][-1]
-        seed_indices = feat_dict['sa_indices'][-1]
+        seed_points = feat_dict['fp_xyz'][-1]
+        seed_features = feat_dict['fp_features'][-1]
+        seed_indices = feat_dict['fp_indices'][-1]
 
         return seed_points, seed_features, seed_indices
 
@@ -149,7 +152,7 @@ class R3D3DHead(R3DVoteHead):
         (vote_targets, center_targets, size_res_targets, dir_class_targets,
          dir_res_targets, mask_targets, centerness_targets, corner3d_targets,
          vote_mask, positive_mask, negative_mask, centerness_weights,
-         box_loss_weights, heading_res_loss_weight, hidden_offset) = targets
+         box_loss_weights, heading_res_loss_weight, hidden_offset, sem_mask) = targets
 
         # calculate centerness loss
         centerness_loss = self.objectness_loss(
@@ -216,6 +219,15 @@ class R3D3DHead(R3DVoteHead):
             hidden_offset,
             weight=box_loss_weights.unsqueeze(-1))
 
+        # calculate sem loss
+        batch_num = len(points)
+        points_num = bbox_preds['sem_scores'].size(1)
+        semantic_loss = []
+        for i in range(batch_num):
+            semantic_loss.append(self.semantic_loss(
+                bbox_preds['sem_scores'][i], sem_mask[i,:points_num].long(), avg_factor=points_num))
+        semantic_loss = sum(semantic_loss)
+
         losses = dict(
             centerness_loss=centerness_loss,
             center_loss=center_loss,
@@ -224,7 +236,8 @@ class R3D3DHead(R3DVoteHead):
             size_res_loss=size_loss,
             corner_loss=corner_loss,
             vote_loss=vote_loss,
-            offset_loss=offset_loss)
+            offset_loss=offset_loss,
+            semantic_loss = semantic_loss)
 
         return losses
 
@@ -279,7 +292,7 @@ class R3D3DHead(R3DVoteHead):
         (vote_targets, center_targets, size_res_targets, dir_class_targets,
          dir_res_targets, mask_targets, centerness_targets, corner3d_targets,
          vote_mask, positive_mask, negative_mask,
-         hidden_offset) = multi_apply(self.get_targets_single, points,
+         hidden_offset, sem_mask) = multi_apply(self.get_targets_single, points,
                                       gt_bboxes_3d, gt_labels_3d, gt_offset,
                                       pts_semantic_mask, pts_instance_mask,
                                       aggregated_points, seed_points)
@@ -295,6 +308,7 @@ class R3D3DHead(R3DVoteHead):
         corner3d_targets = torch.stack(corner3d_targets)
         vote_targets = torch.stack(vote_targets)
         vote_mask = torch.stack(vote_mask)
+        sem_mask = torch.stack(sem_mask)
         hidden_offset = torch.stack(hidden_offset)
 
         center_targets -= bbox_preds['aggregated_points']
@@ -319,7 +333,7 @@ class R3D3DHead(R3DVoteHead):
                 dir_class_targets, dir_res_targets, mask_targets,
                 centerness_targets, corner3d_targets, vote_mask, positive_mask,
                 negative_mask, centerness_weights, box_loss_weights,
-                heading_res_loss_weight, hidden_offset)
+                heading_res_loss_weight, hidden_offset, sem_mask)
 
     def get_targets_single(self,
                            points,
@@ -422,15 +436,18 @@ class R3D3DHead(R3DVoteHead):
         enlarged_gt_bboxes_3d.tensor[:, 2] -= self.train_cfg.expand_dims_length
         vote_mask, vote_assignment = self._assign_targets_by_points_inside(
             enlarged_gt_bboxes_3d, seed_points)
+        sem_mask,_ = self._assign_targets_by_points_inside(
+            enlarged_gt_bboxes_3d, points)
 
         vote_targets = gt_bboxes_3d.gravity_center
         vote_targets = vote_targets[vote_assignment] - seed_points
         vote_mask = vote_mask.max(1)[0] > 0
+        sem_mask = sem_mask.max(1)[0] > 0
 
         return (vote_targets, center_targets, size_res_targets,
                 dir_class_targets, dir_res_targets, mask_targets,
                 centerness_targets, corner3d_targets, vote_mask, positive_mask,
-                negative_mask, hidden_offset)
+                negative_mask, hidden_offset, sem_mask)
 
     def get_bboxes(self, points, bbox_preds, input_metas, rescale=False):
         """Generate bboxes from r3d3d head predictions.

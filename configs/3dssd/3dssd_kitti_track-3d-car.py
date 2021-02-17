@@ -89,8 +89,8 @@ test_pipeline = [
 
 data = dict(
     samples_per_gpu=8,
-    workers_per_gpu=8,
-    train=dict(dataset=dict(pipeline=train_pipeline,time_series=2)),
+    workers_per_gpu=4,
+    train=dict(dataset=dict(pipeline=train_pipeline,time_series=1)),
     val=dict(pipeline=test_pipeline),
     test=dict(pipeline=test_pipeline))
 
@@ -103,7 +103,7 @@ model = dict(
         bbox_coder=dict(
             type='AnchorFreeBBoxCoder', num_dir_bins=12, with_rot=True)))
 
-# test_cfg = dict(with_hidden=False)
+test_cfg = dict(with_hidden=False)
 
 # optimizer
 lr = 0.001 # max learning rate

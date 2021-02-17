@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from mmcv.runner import force_fp32
+from mmcv.cnn import ConvModule
 from torch import nn as nn
 from torch.nn import functional as F
 
@@ -48,6 +49,7 @@ class R3DVoteHead(nn.Module):
                  vote_aggregation_cfg=None,
                  hidden_module_cfg=None,
                  pred_layer_cfg=None,
+                 sem_layer_cfg=None,
                  conv_cfg=dict(type='Conv1d'),
                  norm_cfg=dict(type='BN1d'),
                  objectness_loss=None,
@@ -96,6 +98,23 @@ class R3DVoteHead(nn.Module):
             **pred_layer_cfg,
             num_cls_out_channels=self._get_cls_out_channels(),
             num_reg_out_channels=self._get_reg_out_channels())
+        
+        # pts segmentation
+        self.conv_sem= nn.Sequential()
+        conv_spec = [sem_layer_cfg['in_channels']] + list(sem_layer_cfg['cls_conv_channels'])
+        for i in range(len(conv_spec) - 1):
+            self.conv_sem.add_module(
+                f'layer{i}',
+                ConvModule(
+                    conv_spec[i],
+                    conv_spec[i + 1],
+                    kernel_size=1,
+                    padding=0,
+                    conv_cfg=sem_layer_cfg['conv_cfg'],
+                    norm_cfg=sem_layer_cfg['norm_cfg'],
+                    act_cfg=sem_layer_cfg['act_cfg'],
+                    bias=sem_layer_cfg['bias'],
+                    inplace=True))
 
     def init_weights(self):
         """Initialize weights of VoteHead."""
@@ -154,33 +173,39 @@ class R3DVoteHead(nn.Module):
 
         seed_points, seed_features, seed_indices = self._extract_input(
             feat_dict)
+        
+        sem_features = torch.cat([seed_points.transpose(1,2),seed_features],dim=1)
+        sem_scores = self.conv_sem(sem_features).transpose(1,2)
+
+        foreground_ind = torch.topk(sem_scores,self.vote_module.num_points,1)[1]
+        seed_points = torch.gather(
+            seed_points, 1, foreground_ind.expand(-1, -1, seed_points.shape[2]))
+        seed_features = torch.gather(
+            seed_features, 2,
+            foreground_ind.transpose(1,2).expand(-1, seed_features.shape[1], -1))
+        seed_indices = torch.gather(seed_indices,1,foreground_ind.squeeze(-1))
 
         # generate seed by seed and hidden
-        seed_num = self.vote_module.num_points
-        hidden_seed_points = seed_points.clone()
-        hidden_seed_features = seed_features.clone()
-        hidden_seed_indices = seed_indices.clone()
         if hidden_dict is None:
-            # not the first frame
+            # the first frame
             hidden_dict = {
-                'xyz': seed_points[:, :seed_num].clone(),
-                'features': seed_features[..., :seed_num].clone(),
-                'indices': seed_indices[:, :seed_num].clone()
+                'xyz': seed_points.clone(),
+                'features': seed_features.clone(),
+                'indices': seed_indices.clone()
             }
 
         hidden_points = torch.cat(
-            [hidden_dict['xyz'], seed_points[:, :seed_num]], axis=1)
+            [hidden_dict['xyz'], seed_points], axis=1)
         hidden_features = torch.cat(
-            [hidden_dict['features'], seed_features[..., :seed_num]], axis=2)
+            [hidden_dict['features'], seed_features], axis=2)
         hidden_indices = torch.cat(
-            [hidden_dict['indices'], seed_indices[:, :seed_num]], axis=1)
+            [hidden_dict['indices'], seed_indices], axis=1)
 
         hidden_ret = self.hidden_module(
             points_xyz=hidden_points, features=hidden_features)
-        hidden_seed_points[:, :seed_num] = hidden_ret[0]
-        hidden_seed_features[..., :seed_num] = hidden_ret[1]
-        hidden_seed_indices[:, :seed_num] = torch.gather(
-            hidden_indices, 1, hidden_ret[2].to(torch.int64))
+        hidden_seed_points = hidden_ret[0]
+        hidden_seed_features = hidden_ret[1]
+        hidden_seed_indices = torch.gather(hidden_indices, 1, hidden_ret[2].long())
 
         # 1. generate vote_points from seed_points
         vote_points, vote_features, vote_offset = self.vote_module(
@@ -190,10 +215,11 @@ class R3DVoteHead(nn.Module):
             seed_indices=hidden_seed_indices,
             hidden_points=hidden_ret[0],
             hidden_features=hidden_ret[1],
-            hidden_indices=hidden_seed_indices[:, :seed_num],
+            hidden_indices=hidden_ret[2],
             vote_points=vote_points,
             vote_features=vote_features,
-            vote_offset=vote_offset)
+            vote_offset=vote_offset,
+            sem_scores=sem_scores)
 
         # 2. aggregate vote_points
         if sample_mod == 'vote':

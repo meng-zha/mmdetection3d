@@ -203,7 +203,8 @@ class KittiTrackDataset(Custom3DDataset):
             gt_bboxes_3d, rect, Trv2c)
         gt_bboxes_3d = np.concatenate([gt_boxes_lidar, gt_offset[:, :2]],
                                       axis=-1)
-        gt_bboxes_3d = LiDARInstance3DBoxes(gt_bboxes_3d, box_dim=9)
+        gt_bboxes_3d = LiDARInstance3DBoxes(
+            gt_bboxes_3d, box_dim=9, origin=(0.5, 0.5, 0.5))
         gt_bboxes = annos['bbox']
 
         selected = self.drop_arrays_by_name(gt_names, ['DontCare'])
@@ -244,13 +245,13 @@ class KittiTrackDataset(Custom3DDataset):
         if self.time_series == 1:
             self.pre_pipeline(input_dicts[0])
             example = self.load_pipeline(input_dicts[0])
-            if self.filter_empty_gt and (example is None or len(
-                    example['gt_bboxes_3d']) == 0):
+            if self.filter_empty_gt and (example is None
+                                         or len(example['gt_bboxes_3d']) == 0):
                 return None
             example['gt_bboxes_3d'] = LiDARInstance3DBoxes(
                 example['gt_bboxes_3d'].tensor[:, :7])
             example = self.common_pipeline(example)
-            example['gt_offset'] = torch.zeros(len(example['gt_bboxes_3d']),2)
+            example['gt_offset'] = torch.zeros(len(example['gt_bboxes_3d']), 2)
             example = self.format_pipeline(example)
             return [example]
 
@@ -279,19 +280,21 @@ class KittiTrackDataset(Custom3DDataset):
         merge_example['points_num'] = points_num
         merge_example['boxes_num'] = boxes_num
         #TODO: calib the points to one cooard
-        pose_0 = torch.tensor(input_dicts[0]['pose'],dtype=torch.float32)
+        pose_0 = torch.tensor(input_dicts[0]['pose'], dtype=torch.float32)
         for t in range(1, self.time_series):
-            pose = torch.tensor(input_dicts[t]['pose'],dtype=torch.float32)
+            pose = torch.tensor(input_dicts[t]['pose'], dtype=torch.float32)
             pad_loc = torch.cat([
                 examples[t]['gt_bboxes_3d'].tensor[:, :3],
                 torch.ones((len(examples[t]['gt_bboxes_3d']), 1))
-            ],dim=1)
+            ],
+                                dim=1)
             examples[t]['gt_bboxes_3d'].tensor[:, :3] = (
                 pad_loc @ (pose.T) @ torch.inverse(pose_0.T))[:, :3]
             pad_points = torch.cat([
                 examples[t]['points'].coord,
                 torch.ones((examples[t]['points'].shape[0], 1))
-            ],dim=1)
+            ],
+                                   dim=1)
             examples[t]['points'].tensor[:, :3] = (
                 pad_points @ (pose.T) @ torch.inverse(pose_0.T))[:, :3]
 
@@ -818,8 +821,8 @@ class KittiTrackDataset(Custom3DDataset):
                 label_preds=np.zeros([0, 4]),
                 sample_idx=sample_idx,
             )
-    
-    def show_gt(self,out_dir):
+
+    def show_gt(self, out_dir):
         """gt_bbox visualization.
 
         Args:
@@ -830,13 +833,13 @@ class KittiTrackDataset(Custom3DDataset):
         for i in range(len(self.data_infos)):
             data_info = self.data_infos[i]
             pts_path = data_info['point_cloud']['velodyne_path']
-            file_name = pts_path.replace('/','-').split('.')[0]
+            file_name = pts_path.replace('/', '-').split('.')[0]
             # for now we convert points into depth mode
             gt_bboxes = self.get_ann_info(i)['gt_bboxes_3d'].tensor
             gt_bboxes = Box3DMode.convert(gt_bboxes, Box3DMode.LIDAR,
                                           Box3DMode.DEPTH)
             gt_bboxes[..., 2] += gt_bboxes[..., 5] / 2
-            show_gt_bboxes(gt_bboxes,out_dir,file_name)
+            show_gt_bboxes(gt_bboxes, out_dir, file_name)
             prog_bar.update()
 
     def show(self, results, out_dir):

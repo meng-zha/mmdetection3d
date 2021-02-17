@@ -101,7 +101,7 @@ class VoteModule(nn.Module):
                     ``C=vote_feature_dim``.
         """
         if self.num_points != -1:
-            assert self.num_points < seed_points.shape[1], \
+            assert self.num_points <= seed_points.shape[1], \
                 f'Number of vote points ({self.num_points}) should be '\
                 f'smaller than seed points size ({seed_points.shape[1]})'
             seed_points = seed_points[:, :self.num_points]
