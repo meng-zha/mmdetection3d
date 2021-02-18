@@ -94,6 +94,7 @@ data = dict(
     test=dict(pipeline=test_pipeline))
 
 evaluation = dict(interval=2)
+test_cfg = dict(with_hidden=False)
 
 # model settings
 model = dict(
