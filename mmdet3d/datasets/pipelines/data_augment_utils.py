@@ -123,12 +123,13 @@ def box_collision_test(boxes, qboxes, clockwise=True):
     return ret
 
 
-@numba.njit
-def noise_per_box(boxes, valid_mask, loc_noises, rot_noises):
+@numba.jit
+def noise_per_box(boxes, track, valid_mask, loc_noises, rot_noises):
     """Add noise to every box (only on the horizontal plane).
 
     Args:
-        boxes (np.ndarray): Input boxes with shape (N, 5).
+        boxes (list of np.ndarray): Input boxes with shape (N, 7) with length as time series, the last 2 contain offsets
+        track (list of np.ndarray)： tracking id of each frame
         valid_mask (np.ndarray): Mask to indicate which boxes are valid
             with shape (N).
         loc_noises (np.ndarray): Location noises with shape (N, M, 3).
@@ -138,28 +139,69 @@ def noise_per_box(boxes, valid_mask, loc_noises, rot_noises):
         np.ndarray: Mask to indicate whether the noise is
             added successfully (pass the collision test).
     """
-    num_boxes = boxes.shape[0]
+    series = len(boxes)
+    num_boxes = boxes[0].shape[0]
     num_tests = loc_noises.shape[1]
-    box_corners = box_np_ops.box2d_to_corner_jit(boxes)
-    current_corners = np.zeros((4, 2), dtype=boxes.dtype)
-    rot_mat_T = np.zeros((2, 2), dtype=boxes.dtype)
+    box_corners = []
+    for t in range(series):
+        temp_box = np.ascontiguousarray(boxes[t][:, :5])
+        box_corners.append(box_np_ops.box2d_to_corner_jit(temp_box))
+    current_corners = np.zeros((4, 2), dtype=boxes[0].dtype)
+    rot_mat_T = np.zeros((2, 2), dtype=boxes[0].dtype)
     success_mask = -np.ones((num_boxes, ), dtype=np.int64)
-    # print(valid_mask)
+    valid_corners = []
+
     for i in range(num_boxes):
         if valid_mask[i]:
+            box_flag = True
             for j in range(num_tests):
-                current_corners[:] = box_corners[i]
-                current_corners -= boxes[i, :2]
-                _rotation_box2d_jit_(current_corners, rot_noises[i, j],
-                                     rot_mat_T)
-                current_corners += boxes[i, :2] + loc_noises[i, j, :2]
-                coll_mat = box_collision_test(
-                    current_corners.reshape(1, 4, 2), box_corners)
-                coll_mat[0, i] = False
-                # print(coll_mat)
-                if not coll_mat.any():
+                flag = True
+                for t in range(series):
+                    # generate noises
+                    if t == 0:
+                        current_corners[:] = box_corners[t][i]
+                        current_corners -= boxes[t][i, :2]
+                        _rotation_box2d_jit_(current_corners, rot_noises[i, j], rot_mat_T)
+                        current_corners += boxes[t][i, :2] + loc_noises[i, j, :2]
+                        # detect collision
+                        coll_mat = box_collision_test(
+                            current_corners.reshape(1, 4, 2), box_corners[t])
+                        coll_mat[0, i] = False
+                    # translate into next frame if needed
+                    elif t > 0:
+                        id_t = track[0][i]  # tracking id in 1st frame
+                        ind = np.where(track[t] == id_t, True, False)
+                        ind_pre = np.where(track[t - 1] == id_t, True, False)
+                        if not ind.any() or not ind_pre.any():
+                            box_flag = False  # the specific box in 1st frame disappears
+                            flag = False
+                            valid_corners.clear()
+                            break
+                        angle = np.arctan2(boxes[t - 1][ind_pre, 6], boxes[t - 1][ind_pre, 5])
+                        angle += rot_noises[i, j]
+                        radius = np.sqrt(np.square(boxes[t - 1][ind_pre, 6]) + np.square(boxes[t - 1][ind_pre, 5]))
+                        delta_x = radius * np.cos(angle)
+                        delta_y = radius * np.sin(angle)
+                        current_corners += np.array([delta_x, delta_y]).squeeze()
+                        # detect collision
+                        coll_mat = box_collision_test(
+                            current_corners.reshape(1, 4, 2), box_corners[t])
+                        coll_mat[0, ind] = False
+                    if coll_mat.any():
+                        # collision detected
+                        flag = False
+                        valid_corners.clear()
+                        break
+                    else:
+                        valid_corners.append(current_corners)
+                if flag:
                     success_mask[i] = j
-                    box_corners[i] = current_corners
+                    for t in range(series):
+                        id_t = track[0][i]  # tracking id in 1st frame
+                        ind = np.where(track[t] == id_t, True, False)
+                        box_corners[t][ind] = valid_corners[t]
+                    break
+                if not box_flag:
                     break
     return success_mask
 
@@ -306,6 +348,7 @@ def points_transform_(points, centers, point_masks, loc_transform,
                     points[i, :3] += centers[j, :3]
                     points[i, :3] += loc_transform[j]
                     break  # only apply first box's transform
+    return points
 
 
 @numba.njit
@@ -323,10 +366,34 @@ def box3d_transform_(boxes, loc_transform, rot_transform, valid_mask):
         if valid_mask[i]:
             boxes[i, :3] += loc_transform[i]
             boxes[i, 6] += rot_transform[i]
+    return boxes
+
+
+def generate_new_loc(gt_boxes, rot_transforms, ind_pre, t, i):
+    """Transform 3D boxes.
+
+    Args:
+        gt_boxes (list of np.ndarray): 3D boxes to be transformed.
+        rot_transforms (np.ndarray): Rotation transform to be applied.
+        ind_pre (int): index of box in the previous frame
+        t (int): time slice
+        i (int): box index
+
+    Return:
+        new location translation vector
+    """
+    angle = np.arctan2(gt_boxes[t - 1][ind_pre, 8], gt_boxes[t - 1][ind_pre, 7])
+    angle += rot_transforms[i]
+    radius = np.sqrt(np.square(gt_boxes[t - 1][ind_pre, 8]) + np.square(gt_boxes[t - 1][ind_pre, 7]))
+    delta_x = radius * np.cos(angle)
+    delta_y = radius * np.sin(angle)
+
+    return np.array([delta_x, delta_y]).squeeze()
 
 
 def noise_per_object_v3_(gt_boxes,
                          points=None,
+                         track=None,
                          valid_mask=None,
                          rotation_perturb=np.pi / 4,
                          center_noise_std=1.0,
@@ -336,8 +403,10 @@ def noise_per_object_v3_(gt_boxes,
     to test this function points_transform_
 
     Args:
-        gt_boxes (np.ndarray): Ground truth boxes with shape (N, 7).
-        points (np.ndarray | None): Input point cloud with shape (M, 4).
+        gt_boxes (list of np.ndarray): Ground truth boxes with shape (N, 7).
+        points (list of np.ndarray | None): Input point cloud with shape (M, 4).
+            Default: None.
+        track (list of np.ndarray | None): tracking ID for each box.
             Default: None.
         valid_mask (np.ndarray | None): Mask to indicate which boxes are valid.
             Default: None.
@@ -348,7 +417,8 @@ def noise_per_object_v3_(gt_boxes,
             Default: pi/4.
         num_try (int): Number of try. Default: 100.
     """
-    num_boxes = gt_boxes.shape[0]
+    series = len(gt_boxes)
+    num_boxes = gt_boxes[0].shape[0]  # boxes in 1st frame
     if not isinstance(rotation_perturb, (list, tuple, np.ndarray)):
         rotation_perturb = [-rotation_perturb, rotation_perturb]
     if not isinstance(global_random_rot_range, (list, tuple, np.ndarray)):
@@ -364,13 +434,13 @@ def noise_per_object_v3_(gt_boxes,
         ]
     if valid_mask is None:
         valid_mask = np.ones((num_boxes, ), dtype=np.bool_)
-    center_noise_std = np.array(center_noise_std, dtype=gt_boxes.dtype)
+    center_noise_std = np.array(center_noise_std, dtype=gt_boxes[0].dtype)
 
     loc_noises = np.random.normal(
         scale=center_noise_std, size=[num_boxes, num_try, 3])
     rot_noises = np.random.uniform(
         rotation_perturb[0], rotation_perturb[1], size=[num_boxes, num_try])
-    gt_grots = np.arctan2(gt_boxes[:, 0], gt_boxes[:, 1])
+    gt_grots = np.arctan2(gt_boxes[0][:, 0], gt_boxes[0][:, 1])
     grot_lowers = global_random_rot_range[0] - gt_grots
     grot_uppers = global_random_rot_range[1] - gt_grots
     global_rot_noises = np.random.uniform(
@@ -378,17 +448,9 @@ def noise_per_object_v3_(gt_boxes,
         grot_uppers[..., np.newaxis],
         size=[num_boxes, num_try])
 
-    origin = (0.5, 0.5, 0)
-    gt_box_corners = box_np_ops.center_to_corner_box3d(
-        gt_boxes[:, :3],
-        gt_boxes[:, 3:6],
-        gt_boxes[:, 6],
-        origin=origin,
-        axis=2)
-
-    # TODO: rewrite this noise box function?
+    # Cautious: we dont need to use global rot in cfgs so we dont modify the func v2
     if not enable_grot:
-        selected_noise = noise_per_box(gt_boxes[:, [0, 1, 3, 4, 6]],
+        selected_noise = noise_per_box([gt_boxes[t][:, [0, 1, 3, 4, 6, 7, 8]] for t in range(series)], track,
                                        valid_mask, loc_noises, rot_noises)
     else:
         selected_noise = noise_per_box_v2_(gt_boxes[:, [0, 1, 3, 4, 6]],
@@ -397,12 +459,67 @@ def noise_per_object_v3_(gt_boxes,
 
     loc_transforms = _select_transform(loc_noises, selected_noise)
     rot_transforms = _select_transform(rot_noises, selected_noise)
-    surfaces = box_np_ops.corner_to_surfaces_3d_jit(gt_box_corners)
-    if points is not None:
-        # TODO: replace this points_in_convex function by my tools?
-        point_masks = box_np_ops.points_in_convex_polygon_3d_jit(
-            points[:, :3], surfaces)
-        points_transform_(points, gt_boxes[:, :3], point_masks, loc_transforms,
-                          rot_transforms, valid_mask)
 
-    box3d_transform_(gt_boxes, loc_transforms, rot_transforms, valid_mask)
+    # print('!!track', track)
+
+    origin = (0.5, 0.5, 0)
+    gt_box_corners = box_np_ops.center_to_corner_box3d(
+        gt_boxes[0][:, :3],
+        gt_boxes[0][:, 3:6],
+        gt_boxes[0][:, 6],
+        origin=origin,
+        axis=2)
+    surfaces = box_np_ops.corner_to_surfaces_3d_jit(gt_box_corners)
+    # process 1st frame points
+    if points is not None:
+        point_masks = box_np_ops.points_in_convex_polygon_3d_jit(points[0][:, :3], surfaces)
+        points[0] = points_transform_(points[0], gt_boxes[0][:, :3], point_masks, loc_transforms,
+                                      rot_transforms, valid_mask)
+    gt_boxes[0] = box3d_transform_(gt_boxes[0], loc_transforms, rot_transforms, valid_mask)
+
+    if series > 1:
+        # process subsequent frames
+        for t in range(1, series):
+            # print('!!!!t = ', t)
+            for i in range(gt_boxes[0].shape[0]):
+                if valid_mask[i]:
+                    id_t = track[0][i]  # tracking id in 1st frame
+                    ind = np.where(track[t] == id_t, True, False)
+                    # print('? track_t: ', track[t])
+                    # print('?', id_t, ind)
+                    if not ind.any():
+                        # the specific box in 1st frame disappears
+                        # print('? disappears!')
+                        continue
+                    # print('?box:', i, 'ind', np.argwhere(ind == True))
+                    gt_box_corners = box_np_ops.center_to_corner_box3d(
+                        gt_boxes[t][ind, :3],
+                        gt_boxes[t][ind, 3:6],
+                        gt_boxes[t][ind, 6],
+                        origin=origin,
+                        axis=2)
+                    surfaces = box_np_ops.corner_to_surfaces_3d_jit(gt_box_corners)
+                    point_masks = box_np_ops.points_in_convex_polygon_3d_jit(points[t][:, :3], surfaces)
+                    # first apply traditional point and boxes transform to series t then translate for each gt_points
+                    points[t] = points_transform_(points[t], gt_boxes[t][ind, :3], point_masks, [loc_transforms[i]],
+                                                  [rot_transforms[i]], valid_mask)
+                    point_masks = np.squeeze(point_masks)
+                    # print('?mask count:', np.sum(point_masks == 1, axis=0))
+                    gt_boxes[t][ind, :3] += loc_transforms[i]
+                    gt_boxes[t][ind, 6] += rot_transforms[i]
+                    # the points and boxes in subsequent frames should be translated to the 1st then modified
+                    for s in range(t, 0, -1):
+                        ind_s = np.where(track[s - 1] == id_t, True, False)
+                        points[t][point_masks, :2] -= gt_boxes[s - 1][ind_s, 7:]
+                        gt_boxes[t][ind, :2] -= gt_boxes[s - 1][ind_s, 7:]
+                    # then translate to the new location
+                    for s in range(0, t):
+                        ind_s = np.where(track[s] == id_t, True, False)
+                        trans = generate_new_loc(gt_boxes, rot_transforms, ind_s, s + 1, i)
+                        points[t][point_masks, :2] += trans
+                        gt_boxes[t][ind, :2] += trans
+                    # delete points in new boxes?
+                    # TODO: the problem is the new location may contain background points
+                    # then handle points?
+
+    return gt_boxes, points

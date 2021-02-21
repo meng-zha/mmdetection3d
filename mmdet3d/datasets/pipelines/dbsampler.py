@@ -102,7 +102,8 @@ class DataBaseSampler(object):
                      type='LoadPointsFromFile',
                      coord_type='LIDAR',
                      load_dim=4,
-                     use_dim=[0, 1, 2, 3])):
+                     use_dim=4,
+                     file_client_args=dict(backend='disk'))):
         super().__init__()
         self.data_root = data_root
         self.info_path = info_path
@@ -247,6 +248,7 @@ class DataBaseSampler(object):
 
             # num_sampled = len(sampled)
             s_points_list = []
+            s_points_len_list = []
             count = 0
             for info in sampled:
                 file_path = os.path.join(
@@ -259,6 +261,7 @@ class DataBaseSampler(object):
                 count += 1
 
                 s_points_list.append(s_points)
+                s_points_len_list.append(len(s_points))
 
             gt_labels = np.array([self.cat2label[s['name']] for s in sampled],
                                  dtype=np.long)
@@ -271,7 +274,9 @@ class DataBaseSampler(object):
                 s_points_list[0].cat(s_points_list),
                 'group_ids':
                 np.arange(gt_bboxes.shape[0],
-                          gt_bboxes.shape[0] + len(sampled))
+                          gt_bboxes.shape[0] + len(sampled)),
+                'points_len_in_boxes':
+                s_points_len_list
             }
 
         return ret

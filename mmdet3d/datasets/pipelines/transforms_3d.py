@@ -1,5 +1,7 @@
 from mmdet3d.core.points.lidar_points import LiDARPoints
+from mmdet3d.datasets.pipelines import data_augment_utils
 import numpy as np
+import copy
 from mmcv import is_tuple_of
 from mmcv.utils import build_from_cfg
 
@@ -145,6 +147,97 @@ class ObjectSample(object):
         points = points[np.logical_not(masks.any(-1))]
         return points
 
+    def move_sampled_boxes(self, sampled_dict, gt_bboxes_3d, trans_std):
+        """Move sampled boxes from the current frame to next one using offset.
+
+        Args:
+            sampled_dict (dict): samples in the current frame
+            gt_bboxes_3d (:obj:`LiDARInstance3DBoxes'): boxes information contained with offsets
+            trans_std (np. 2*1 array): std of translation for x,y offset
+
+        Returns:
+            moved_sampled_bboxes_3d (np.ndarray): moved sampled boxes to next frame
+        """
+
+        # gt_box: x.y.z.l.w.h.alpha,delta_x.delta_y
+        sampled_gt_bboxes_3d = sampled_dict['gt_bboxes_3d']
+        assert sampled_gt_bboxes_3d.shape[1] == 7
+
+        if len(gt_bboxes_3d) != 0:
+            offset = np.mean(gt_bboxes_3d.tensor.numpy()[:, 7:], axis=0)
+        else:
+            offset = 0
+
+        sp_offset = np.random.normal(loc=offset, scale=trans_std, size=(sampled_gt_bboxes_3d.shape[0], 2))
+        # record the delta_x & delta_y of each sample, as the constant speed
+        moved_sampled_bboxes_3d = np.concatenate([sampled_gt_bboxes_3d, sp_offset], axis=-1)
+
+        return moved_sampled_bboxes_3d
+
+    def detect_collision(self, sampled_dict, moved_sampled_bboxes_3d, gt_bboxes):
+        """detect collision of boxes (used for detecting possible collisions with subsequent frames)
+
+        Args:
+            sampled_dict (dict): samples in the current frame
+            moved_sampled_bboxes_3d (np.ndarray): moved sampled boxes
+            gt_bboxes (np.ndarray): ground truth boxes
+
+        Returns:
+            sampled_dict (dict): valid sampled boxes and points after collision detection
+
+            In returned dictionary, the format of gt_bboxes is modified as np.ndarray
+        """
+        num_gt = gt_bboxes.shape[0]
+        sp_boxes = moved_sampled_bboxes_3d
+        num_sampled = sp_boxes.shape[0]
+
+        gt_bboxes_bv = box_np_ops.center_to_corner_box2d(
+            gt_bboxes[:, 0:2], gt_bboxes[:, 3:5], gt_bboxes[:, 6])
+        boxes = np.concatenate([gt_bboxes, sp_boxes], axis=0).copy()
+        sp_boxes_new = boxes[gt_bboxes.shape[0]:]
+        sp_boxes_bv = box_np_ops.center_to_corner_box2d(
+            sp_boxes_new[:, 0:2], sp_boxes_new[:, 3:5], sp_boxes_new[:, 6])
+        total_bv = np.concatenate([gt_bboxes_bv, sp_boxes_bv], axis=0)
+
+        coll_mat = data_augment_utils.box_collision_test(total_bv, total_bv)
+        diag = np.arange(total_bv.shape[0])
+        coll_mat[diag, diag] = False
+
+        points = sampled_dict['points'].tensor.numpy()
+
+        count = 0
+        points_len_list = sampled_dict['points_len_in_boxes']
+        # print('?ori points num: ', points.shape[0])
+        # print('? ori points len: ', points_len_list)
+        boxes_del_list = []
+        points_del_list = []
+        new_points_len = []
+        for i in range(num_gt, num_gt + num_sampled):
+            if coll_mat[i].any():
+                coll_mat[i] = False
+                coll_mat[:, i] = False
+                boxes_del_list.append(i - num_gt)
+                for j in range(count, count + points_len_list[i - num_gt]):
+                    points_del_list.append(j)
+            else:
+                new_points_len.append(sampled_dict['points_len_in_boxes'][i - num_gt])
+            count += points_len_list[i - num_gt]
+        # print('?del boxes: ', boxes_del_list)
+        # print('?del points: ', len(points_del_list))
+        points = np.delete(points, points_del_list, axis=0)
+        # print('?after del points num: ', points.shape[0])
+        # print('?after del points len: ', new_points_len)
+
+        sampled_dict['gt_labels_3d'] = np.delete(sampled_dict['gt_labels_3d'], boxes_del_list, axis=0)
+        sampled_dict['gt_bboxes_3d'] = np.delete(sampled_dict['gt_bboxes_3d'], boxes_del_list, axis=0)
+        # print('? in collision after sp boxes: ', sampled_dict['gt_bboxes_3d'])
+        sampled_dict['points'] = LiDARPoints(points, points_dim=4)
+        sampled_dict['points_len_in_boxes'] = new_points_len
+
+        return sampled_dict
+
+    # input A examples dict with 3*[]; return 3*[](3 is time series can be adjust through dataset cfg)
+    # CAUTIOUS: when alter the CALL func adapting multi-frame, did not consider sample-2D
     def __call__(self, input_dict):
         """Call function to sample ground truth objects to the data.
 
@@ -156,11 +249,13 @@ class ObjectSample(object):
                 'points', 'gt_bboxes_3d', 'gt_labels_3d' keys are updated \
                 in the result dict.
         """
-        gt_bboxes_3d = input_dict['gt_bboxes_3d']
-        gt_labels_3d = input_dict['gt_labels_3d']
-
+        # all of data are 3*[]
+        gt_bboxes_3d = input_dict[0]['gt_bboxes_3d']
+        gt_labels_3d = input_dict[0]['gt_labels_3d']
         # change to float for blending operation
-        points = input_dict['points']
+        points = input_dict[0]['points']
+        series = len(input_dict)
+
         if self.sample_2d:
             img = input_dict['img']
             gt_bboxes_2d = input_dict['gt_bboxes']
@@ -171,35 +266,73 @@ class ObjectSample(object):
                 gt_bboxes_2d=gt_bboxes_2d,
                 img=img)
         else:
+            # original gt_bbox has 7 dim but we expand it into 9
             sampled_dict = self.db_sampler.sample_all(
-                gt_bboxes_3d.tensor.numpy(), gt_labels_3d, img=None)
+                gt_bboxes_3d.tensor.numpy()[:, :7], gt_labels_3d, img=None)
 
+        # format of gt_box: x.y.z.l.w.h.alpha,delta_x.delta_y
         if sampled_dict is not None:
+            # detect collision by each frame
+            # notice the translation std
+            sampled_dict['gt_bboxes_3d'] = self.move_sampled_boxes(sampled_dict, gt_bboxes_3d, np.array([1., 1.]))
+            moved_sampled_bboxes_3d = copy.deepcopy(sampled_dict['gt_bboxes_3d'])
+            # print('?moved sampled boxes: ', sampled_dict['gt_bboxes_3d'])
+            # print('? before sp boxes: ', moved_sampled_bboxes_3d)
+            for t in range(1, series):
+                # move gt & samples
+                moved_gt = input_dict[t]['gt_bboxes_3d'].tensor.numpy()
+                moved_sampled_bboxes_3d[:, :2] = moved_sampled_bboxes_3d[:, :2] + moved_sampled_bboxes_3d[:, 7:]
+                sampled_dict = self.detect_collision(sampled_dict, moved_sampled_bboxes_3d, moved_gt)
+                moved_sampled_bboxes_3d = copy.deepcopy(sampled_dict['gt_bboxes_3d'])
+                moved_sampled_bboxes_3d[:, :2] = moved_sampled_bboxes_3d[:, :2] + t * moved_sampled_bboxes_3d[:, 7:]
+
             sampled_gt_bboxes_3d = sampled_dict['gt_bboxes_3d']
             sampled_points = sampled_dict['points']
             sampled_gt_labels = sampled_dict['gt_labels_3d']
+            if self.sample_2d:
+                sampled_gt_bboxes_2d = sampled_dict['gt_bboxes_2d']
+                gt_bboxes_2d = np.concatenate([gt_bboxes_2d, sampled_gt_bboxes_2d]).astype(np.float32)
+                input_dict['gt_bboxes'] = gt_bboxes_2d
+                input_dict['img'] = sampled_dict['img']
 
-            gt_labels_3d = np.concatenate([gt_labels_3d, sampled_gt_labels],
-                                          axis=0)
-            gt_bboxes_3d = gt_bboxes_3d.new_box(
-                np.concatenate(
-                    [gt_bboxes_3d.tensor.numpy(), sampled_gt_bboxes_3d]))
+            gt_labels_3d = np.concatenate([gt_labels_3d, sampled_gt_labels], axis=0)
+            gt_bboxes_3d = gt_bboxes_3d.new_box(np.concatenate([gt_bboxes_3d.tensor.numpy(), sampled_gt_bboxes_3d]))
 
             points = self.remove_points_in_boxes(points, sampled_gt_bboxes_3d)
             # check the points dimension
             points = points.cat([sampled_points, points])
 
-            if self.sample_2d:
-                sampled_gt_bboxes_2d = sampled_dict['gt_bboxes_2d']
-                gt_bboxes_2d = np.concatenate(
-                    [gt_bboxes_2d, sampled_gt_bboxes_2d]).astype(np.float32)
+            input_dict[0]['gt_bboxes_3d'] = gt_bboxes_3d
+            input_dict[0]['gt_labels_3d'] = gt_labels_3d.astype(np.long)
+            input_dict[0]['points'] = points
+            sampled_track_id = -np.arange(1, sampled_gt_bboxes_3d.shape[0] + 1)
+            input_dict[0]['ann_info']['track_id'] = np.concatenate([input_dict[0]['ann_info']['track_id'], sampled_track_id])
+            input_dict[0]['ann_info']['num_points_in_gt'] = np.concatenate([input_dict[0]['ann_info']['num_points_in_gt'], sampled_dict['points_len_in_boxes']])
+            sampled_points = sampled_points.tensor.numpy()
 
-                input_dict['gt_bboxes'] = gt_bboxes_2d
-                input_dict['img'] = sampled_dict['img']
+            for t in range(1, series):
+                gt_bboxes_3d = input_dict[t]['gt_bboxes_3d']
+                gt_labels_3d = input_dict[t]['gt_labels_3d']
+                points = input_dict[t]['points']
+                # translate boxes
+                sampled_gt_bboxes_3d[:, :2] = sampled_gt_bboxes_3d[:, :2] + sampled_gt_bboxes_3d[:, 7:]
+                # translate points
+                count = 0
+                for i in range(len(sampled_dict['points_len_in_boxes'])):
+                    sampled_points[count: count + sampled_dict['points_len_in_boxes'][i], :2] += sampled_gt_bboxes_3d[i, 7:]
+                    count += sampled_dict['points_len_in_boxes'][i]
 
-        input_dict['gt_bboxes_3d'] = gt_bboxes_3d
-        input_dict['gt_labels_3d'] = gt_labels_3d.astype(np.long)
-        input_dict['points'] = points
+                gt_labels_3d = np.concatenate([gt_labels_3d, sampled_gt_labels], axis=0)
+                gt_bboxes_3d = gt_bboxes_3d.new_box(np.concatenate([gt_bboxes_3d.tensor.numpy(), sampled_gt_bboxes_3d]))
+                points = self.remove_points_in_boxes(points, sampled_gt_bboxes_3d)
+                points = points.cat([LiDARPoints(sampled_points, points_dim=4), points])
+
+                input_dict[t]['gt_bboxes_3d'] = gt_bboxes_3d
+                input_dict[t]['gt_labels_3d'] = gt_labels_3d.astype(np.long)
+                input_dict[t]['points'] = points
+                sampled_track_id = -np.arange(1, sampled_gt_bboxes_3d.shape[0] + 1)
+                input_dict[t]['ann_info']['track_id'] = np.concatenate([input_dict[t]['ann_info']['track_id'], sampled_track_id])
+                input_dict[t]['ann_info']['num_points_in_gt'] = np.concatenate([input_dict[t]['ann_info']['num_points_in_gt'], sampled_dict['points_len_in_boxes']])
 
         return input_dict
 
@@ -252,23 +385,26 @@ class ObjectNoise(object):
             dict: Results after adding noise to each object, \
                 'points', 'gt_bboxes_3d' keys are updated in the result dict.
         """
-        gt_bboxes_3d = input_dict['gt_bboxes_3d']
-        points = input_dict['points']
-
-        # TODO: check this inplace function
-        numpy_box = gt_bboxes_3d.tensor.numpy()
-        numpy_points = points.tensor.numpy()
-
-        noise_per_object_v3_(
+        series = len(input_dict)
+        track = [input_dict[t]['ann_info']['track_id'] for t in range(series)]
+        numpy_box = []
+        numpy_points = []
+        for t in range(series):
+            numpy_box.append(input_dict[t]['gt_bboxes_3d'].tensor.numpy())
+            numpy_points.append(input_dict[t]['points'].tensor.numpy())
+        numpy_box, numpy_points = noise_per_object_v3_(
             numpy_box,
             numpy_points,
+            track,
             rotation_perturb=self.rot_range,
             center_noise_std=self.translation_std,
             global_random_rot_range=self.global_rot_range,
             num_try=self.num_try)
 
-        input_dict['gt_bboxes_3d'] = gt_bboxes_3d.new_box(numpy_box)
-        input_dict['points'] = points.new_point(numpy_points)
+        for t in range(series):
+            input_dict[t]['gt_bboxes_3d'] = input_dict[t]['gt_bboxes_3d'].new_box(numpy_box[t])
+            input_dict[t]['points'] = input_dict[t]['points'].new_point(numpy_points[t])
+
         return input_dict
 
     def __repr__(self):
@@ -487,7 +623,7 @@ class ObjectRangeFilter(object):
         if boxes_num is not None:
             valid_boxes_num = [0] + [
                 mask[boxes_num[:t].sum():boxes_num[:t + 1].sum()].sum()
-                for t in range(1,boxes_num.shape[0])
+                for t in range(1, boxes_num.shape[0])
             ]
             input_dict['boxes_num'] = np.array(valid_boxes_num).astype(np.int32)
 
@@ -529,7 +665,7 @@ class PointsRangeFilter(object):
         if points_num is not None:
             valid_points_num = [0] + [
                 points_mask[points_num[:t].sum():points_num[:t + 1].sum()].sum()
-                for t in range(1,points_num.shape[0])
+                for t in range(1, points_num.shape[0])
             ]
             input_dict['points_num'] = np.array(valid_points_num).astype(np.int32)
         return input_dict
@@ -643,7 +779,7 @@ class IndoorPointSample(object):
         else:
             points_res = []
             choices = []
-            for t in range(1,points_num.shape[0]):
+            for t in range(1, points_num.shape[0]):
                 points_t, choices_t = self.points_random_sampling(
                     points[points_num[:t].sum():points_num[:t + 1].sum()],
                     self.num_points,

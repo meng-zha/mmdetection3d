@@ -10,7 +10,6 @@ from mmcv.parallel import DataContainer as DC
 from os import path as osp
 
 from mmdet.datasets import DATASETS
-from torch._C import dtype
 from ..core import show_result, show_gt_bboxes
 from ..core.bbox import Box3DMode, box_np_ops, LiDARInstance3DBoxes, points_cam2img
 from ..core.points import LiDARPoints
@@ -87,16 +86,24 @@ class KittiTrackDataset(Custom3DDataset):
             load_pipeline = []
             common_pipeline = []
             format_pipeline = []
+            object_pipeline = []
+            filter_pipeline = []
             for pipe in pipeline:
-                if 'Load' in pipe['type'] or 'RangeFilter' in pipe['type']:
+                if 'Load' in pipe['type']:
                     load_pipeline.append(pipe)
+                elif 'RangeFilter' in pipe['type']:
+                    filter_pipeline.append(pipe)
                 elif 'Collect' in pipe['type'] or 'Format' in pipe['type']:
                     format_pipeline.append(pipe)
+                elif 'ObjectSample' in pipe['type'] or 'ObjectNoise' in pipe['type']:
+                    object_pipeline.append(pipe)
                 else:
                     common_pipeline.append(pipe)
             self.load_pipeline = Compose(load_pipeline)
             self.common_pipeline = Compose(common_pipeline)
             self.format_pipeline = Compose(format_pipeline)
+            self.object_pipeline = Compose(object_pipeline)
+            self.filter_pipeline = Compose(filter_pipeline)
 
     def _get_pts_filename(self, pts_path):
         """Get point cloud filename according to the given index.
@@ -179,7 +186,7 @@ class KittiTrackDataset(Custom3DDataset):
                 - gt_labels_3d (np.ndarray): Labels of ground truths.
                 - gt_bboxes (np.ndarray): 2D ground truth bboxes.
                 - gt_labels (np.ndarray): Labels of ground truths.
-                - gt_offset (np.ndarrya): Offset of bboxes.
+                - gt_offset (np.ndarray): Offset of bboxes.
                 - gt_names (list[str]): Class names of ground truths.
         """
         # Use index to get the annos, thus the evalhook could also use this api
@@ -195,6 +202,8 @@ class KittiTrackDataset(Custom3DDataset):
         rots = annos['rotation_y']
         gt_offset = annos['next']
         gt_names = annos['name']
+        track_id = annos['track_id']
+        num_points_in_gt = annos['num_points_in_gt']
         gt_bboxes_3d = np.concatenate([loc, dims, rots[..., np.newaxis]],
                                       axis=1).astype(np.float32)
 
@@ -224,7 +233,9 @@ class KittiTrackDataset(Custom3DDataset):
             gt_labels_3d=gt_labels_3d,
             bboxes=gt_bboxes,
             labels=gt_labels,
-            gt_names=gt_names)
+            gt_names=gt_names,
+            track_id=track_id,
+            num_points_in_gt=num_points_in_gt)
         return anns_results
 
     def prepare_train_data(self, index):
@@ -239,18 +250,23 @@ class KittiTrackDataset(Custom3DDataset):
         input_dicts = [self.get_data_info(index)]
         if input_dicts[0] is None:
             return None
+        # print('?index: ', index)
 
         # time_series=1 means the normal detection
         if self.time_series == 1:
             self.pre_pipeline(input_dicts[0])
             example = self.load_pipeline(input_dicts[0])
+            # the order is 1.load 2.object 3.filter 4.common 5.format
+            example = self.object_pipeline([example])
+            example = example[0]
+            example = self.filter_pipeline(example)
             if self.filter_empty_gt and (example is None or len(
                     example['gt_bboxes_3d']) == 0):
                 return None
             example['gt_bboxes_3d'] = LiDARInstance3DBoxes(
                 example['gt_bboxes_3d'].tensor[:, :7])
             example = self.common_pipeline(example)
-            example['gt_offset'] = torch.zeros(len(example['gt_bboxes_3d']),2)
+            example['gt_offset'] = torch.zeros(len(example['gt_bboxes_3d']), 2)
             example = self.format_pipeline(example)
             return [example]
 
@@ -266,6 +282,11 @@ class KittiTrackDataset(Custom3DDataset):
             self.pre_pipeline(input_dicts[t])
             examples.append(self.load_pipeline(input_dicts[t]))
 
+        # the order is 1.load 2.object 3.filter 4.common 5.format
+        examples = self.object_pipeline(examples)
+        for t in range(self.time_series):
+            examples[t] = self.filter_pipeline(examples[t])
+
         # record the points num and boxes num
         points_num = np.array(
             [0] + [example['points'].shape[0] for example in examples],
@@ -278,20 +299,20 @@ class KittiTrackDataset(Custom3DDataset):
         merge_example = copy.deepcopy(examples[0])
         merge_example['points_num'] = points_num
         merge_example['boxes_num'] = boxes_num
-        #TODO: calib the points to one cooard
-        pose_0 = torch.tensor(input_dicts[0]['pose'],dtype=torch.float32)
+        # calib the points to one cooard
+        pose_0 = torch.tensor(input_dicts[0]['pose'], dtype=torch.float32)
         for t in range(1, self.time_series):
-            pose = torch.tensor(input_dicts[t]['pose'],dtype=torch.float32)
+            pose = torch.tensor(input_dicts[t]['pose'], dtype=torch.float32)
             pad_loc = torch.cat([
                 examples[t]['gt_bboxes_3d'].tensor[:, :3],
                 torch.ones((len(examples[t]['gt_bboxes_3d']), 1))
-            ],dim=1)
+            ], dim=1)
             examples[t]['gt_bboxes_3d'].tensor[:, :3] = (
                 pad_loc @ (pose.T) @ torch.inverse(pose_0.T))[:, :3]
             pad_points = torch.cat([
                 examples[t]['points'].coord,
                 torch.ones((examples[t]['points'].shape[0], 1))
-            ],dim=1)
+            ], dim=1)
             examples[t]['points'].tensor[:, :3] = (
                 pad_points @ (pose.T) @ torch.inverse(pose_0.T))[:, :3]
 
@@ -819,7 +840,7 @@ class KittiTrackDataset(Custom3DDataset):
                 sample_idx=sample_idx,
             )
     
-    def show_gt(self,out_dir):
+    def show_gt(self, out_dir):
         """gt_bbox visualization.
 
         Args:
@@ -830,13 +851,13 @@ class KittiTrackDataset(Custom3DDataset):
         for i in range(len(self.data_infos)):
             data_info = self.data_infos[i]
             pts_path = data_info['point_cloud']['velodyne_path']
-            file_name = pts_path.replace('/','-').split('.')[0]
+            file_name = pts_path.replace('/', '-').split('.')[0]
             # for now we convert points into depth mode
             gt_bboxes = self.get_ann_info(i)['gt_bboxes_3d'].tensor
             gt_bboxes = Box3DMode.convert(gt_bboxes, Box3DMode.LIDAR,
                                           Box3DMode.DEPTH)
             gt_bboxes[..., 2] += gt_bboxes[..., 5] / 2
-            show_gt_bboxes(gt_bboxes,out_dir,file_name)
+            show_gt_bboxes(gt_bboxes, out_dir, file_name)
             prog_bar.update()
 
     def show(self, results, out_dir):
