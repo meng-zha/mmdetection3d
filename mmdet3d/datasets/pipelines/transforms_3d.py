@@ -147,7 +147,7 @@ class ObjectSample(object):
         points = points[np.logical_not(masks.any(-1))]
         return points
 
-    def move_sampled_boxes(self, sampled_dict, gt_bboxes_3d, trans_std):
+    def move_sampled_boxes(self, sampled_dict, gt_bboxes_3d):
         """Move sampled boxes from the current frame to next one using offset.
 
         Args:
@@ -165,8 +165,10 @@ class ObjectSample(object):
 
         if len(gt_bboxes_3d) != 0:
             offset = np.mean(gt_bboxes_3d.tensor.numpy()[:, 7:], axis=0)
+            trans_std = np.std(gt_bboxes_3d.tensor.numpy()[:, 7:], axis=0)
         else:
             offset = 0
+            trans_std = np.array([.25, .05])
 
         sp_offset = np.random.normal(loc=offset, scale=trans_std, size=(sampled_gt_bboxes_3d.shape[0], 2))
         # record the delta_x & delta_y of each sample, as the constant speed
@@ -274,7 +276,7 @@ class ObjectSample(object):
         if sampled_dict is not None:
             # detect collision by each frame
             # notice the translation std
-            sampled_dict['gt_bboxes_3d'] = self.move_sampled_boxes(sampled_dict, gt_bboxes_3d, np.array([1., 1.]))
+            sampled_dict['gt_bboxes_3d'] = self.move_sampled_boxes(sampled_dict, gt_bboxes_3d)
             moved_sampled_bboxes_3d = copy.deepcopy(sampled_dict['gt_bboxes_3d'])
             # print('?moved sampled boxes: ', sampled_dict['gt_bboxes_3d'])
             # print('? before sp boxes: ', moved_sampled_bboxes_3d)

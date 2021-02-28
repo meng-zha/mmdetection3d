@@ -88,7 +88,11 @@ class R3DVoteHead(nn.Module):
 
         self.vote_module = VoteModule(**vote_module_cfg)
         self.vote_aggregation = build_sa_module(vote_aggregation_cfg)
-        self.hidden_module = build_sa_module(hidden_module_cfg)
+        self.hidden_module = nn.ModuleDict({
+        'self_cur': nn.MultiheadAttention(**hidden_module_cfg),
+        # 'cross_cur' : nn.MultiheadAttention(**hidden_module_cfg),
+        # 'cross_pre': nn.MultiheadAttention(**hidden_module_cfg)
+        })
         self.fp16_enabled = False
 
         # Bbox classification and regression
@@ -156,10 +160,8 @@ class R3DVoteHead(nn.Module):
             feat_dict)
 
         # generate seed by seed and hidden
-        seed_num = self.vote_module.num_points
-        hidden_seed_points = seed_points.clone()
-        hidden_seed_features = seed_features.clone()
-        hidden_seed_indices = seed_indices.clone()
+        seed_num = self.vote_module.num_points//2
+
         if hidden_dict is None:
             # not the first frame
             hidden_dict = {
@@ -169,28 +171,51 @@ class R3DVoteHead(nn.Module):
             }
 
         hidden_points = torch.cat(
-            [hidden_dict['xyz'], seed_points[:, :seed_num]], axis=1)
+            [hidden_dict['xyz'], seed_points], axis=1)
         hidden_features = torch.cat(
-            [hidden_dict['features'], seed_features[..., :seed_num]], axis=2)
+            [hidden_dict['features'], seed_features], axis=2)
         hidden_indices = torch.cat(
-            [hidden_dict['indices'], seed_indices[:, :seed_num]], axis=1)
+            [hidden_dict['indices'], seed_indices], axis=1)
 
-        hidden_ret = self.hidden_module(
-            points_xyz=hidden_points, features=hidden_features)
-        hidden_seed_points[:, :seed_num] = hidden_ret[0]
-        hidden_seed_features[..., :seed_num] = hidden_ret[1]
-        hidden_seed_indices[:, :seed_num] = torch.gather(
-            hidden_indices, 1, hidden_ret[2].to(torch.int64))
+        # 0. cross-attention to fuse the hidden_points
+        # cur_embedding = torch.cat([seed_points[:,:seed_num].transpose(0,1), seed_features[...,:seed_num].transpose(2,0,1)],dim=-1)
+        # pre_embedding = torch.cat([hidden_dict['xyz'].transpose(0,1), hidden_dict['features'].transpose(2,0,1)],dim=-1)
+        positional_encoding = hidden_points
+        positional_encoding[...,0] /= 70.
+        positional_encoding[...,1] /= 40.
+        positional_encoding[...,2] /= 3.
+        positional_encoding = positional_encoding.repeat(1,1,hidden_features.shape[1]//3).permute(1,0,2)
+        cur_embedding =  hidden_features.permute(2,0,1)
+        query_embedding = cur_embedding.clone()
+        query_embedding[...,:hidden_features.shape[1]//3*3] =  query_embedding[...,:hidden_features.shape[1]//3*3]+positional_encoding
+        self_attention, _ = self.hidden_module['self_cur'](query_embedding,query_embedding,cur_embedding)
+        # if hidden_dict is None:
+        #     # not the first frame
+        #     pre_embedding = cur_embedding.clone()
+        #     hidden_dict = {
+        #         'xyz': seed_points[:, :seed_num].clone(),
+        #         'features': seed_features[..., :seed_num].clone(),
+        #         'indices': seed_indices[:, :seed_num].clone()
+        #     }
+        # else:
+        #     pre_embedding = hidden_dict['features'].permute(2,0,1)
+
+        # cross_atten_out_cur, _ = self.hidden_module['cross_cur'](cur_embedding,pre_embedding,pre_embedding)
+        # cross_atten_out_prev, _ = self.hidden_module['cross_pre'](pre_embedding,cur_embedding,cur_embedding)
+
+        # seed_features = torch.cat([cur_embedding, cross_atten_out_cur],dim=2).permute(1,2,0)
+        # hidden_dict['features'] = torch.cat([pre_embedding, cross_atten_out_prev],dim=2).permute(1,2,0)
+        hidden_features = torch.cat([hidden_features, self_attention.permute(1,2,0)],dim=1).contiguous()
 
         # 1. generate vote_points from seed_points
         vote_points, vote_features, vote_offset = self.vote_module(
-            hidden_seed_points, hidden_seed_features)
+            hidden_points, hidden_features)
         results = dict(
-            seed_points=hidden_seed_points,
-            seed_indices=hidden_seed_indices,
-            hidden_points=hidden_ret[0],
-            hidden_features=hidden_ret[1],
-            hidden_indices=hidden_seed_indices[:, :seed_num],
+            seed_points=hidden_points,
+            seed_indices=hidden_indices,
+            hidden_points=seed_points[:,:seed_num],
+            hidden_features=seed_features[...,:seed_num],
+            hidden_indices=seed_indices[:,:seed_num],
             vote_points=vote_points,
             vote_features=vote_features,
             vote_offset=vote_offset)
@@ -221,8 +246,8 @@ class R3DVoteHead(nn.Module):
         elif sample_mod == 'spec':
             # Specify the new center in vote_aggregation
             aggregation_inputs = dict(
-                points_xyz=seed_points,
-                features=seed_features,
+                points_xyz=hidden_points,
+                features=hidden_features,
                 target_xyz=vote_points)
         else:
             raise NotImplementedError(

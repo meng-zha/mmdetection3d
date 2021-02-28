@@ -278,27 +278,11 @@ class KittiTrackDataset(Custom3DDataset):
             input_dicts.append(input_dict)
 
         examples = []
+        # the order is 1.load 2.object 3.filter 4.common 5.format
         for t in range(self.time_series):
             self.pre_pipeline(input_dicts[t])
             examples.append(self.load_pipeline(input_dicts[t]))
 
-        # the order is 1.load 2.object 3.filter 4.common 5.format
-        examples = self.object_pipeline(examples)
-        for t in range(self.time_series):
-            examples[t] = self.filter_pipeline(examples[t])
-
-        # record the points num and boxes num
-        points_num = np.array(
-            [0] + [example['points'].shape[0] for example in examples],
-            dtype=np.int32)
-        boxes_num = np.array(
-            [0] + [example['gt_labels_3d'].shape[0] for example in examples],
-            dtype=np.int32)
-
-        # merge multiple frames to one for aug pipeline
-        merge_example = copy.deepcopy(examples[0])
-        merge_example['points_num'] = points_num
-        merge_example['boxes_num'] = boxes_num
         # calib the points to one cooard
         pose_0 = torch.tensor(input_dicts[0]['pose'], dtype=torch.float32)
         for t in range(1, self.time_series):
@@ -315,6 +299,23 @@ class KittiTrackDataset(Custom3DDataset):
             ], dim=1)
             examples[t]['points'].tensor[:, :3] = (
                 pad_points @ (pose.T) @ torch.inverse(pose_0.T))[:, :3]
+
+        examples = self.object_pipeline(examples)
+        for t in range(self.time_series):
+            examples[t] = self.filter_pipeline(examples[t])
+
+        # record the points num and boxes num
+        points_num = np.array(
+            [0] + [example['points'].shape[0] for example in examples],
+            dtype=np.int32)
+        boxes_num = np.array(
+            [0] + [example['gt_labels_3d'].shape[0] for example in examples],
+            dtype=np.int32)
+
+        # merge multiple frames to one for aug pipeline
+        merge_example = copy.deepcopy(examples[0])
+        merge_example['points_num'] = points_num
+        merge_example['boxes_num'] = boxes_num
 
         merge_example['points'] = LiDARPoints.cat(
             [example['points'] for example in examples])

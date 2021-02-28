@@ -22,19 +22,11 @@ model = dict(
         type='R3D3DHead',
         in_channels=256,
         hidden_module_cfg=dict(
-            type='PointSAModuleMSG',
-            num_point=256,
-            radii=(4.8, 6.4),
-            sample_nums=(16, 32),
-            mlp_channels=((256, 128), (256, 128)),
-            norm_cfg=dict(type='BN2d', eps=1e-3, momentum=0.1),
-            use_xyz=True,
-            fps_mod = ('F-FPS',),
-            normalize_xyz=False,
-            bias=True),
+            embed_dim = 256,
+            num_heads=4),
         vote_module_cfg=dict(
-            in_channels=256,
-            num_points=256,
+            in_channels=512,
+            num_points=512,
             gt_per_seed=1,
             conv_channels=(128, ),
             conv_cfg=dict(type='Conv1d'),
@@ -43,10 +35,10 @@ model = dict(
             vote_xyz_range=(3.0, 3.0, 2.0)),
         vote_aggregation_cfg=dict(
             type='PointSAModuleMSG',
-            num_point=256,
+            num_point=512,
             radii=(4.8, 6.4),
             sample_nums=(16, 32),
-            mlp_channels=((256, 256, 256, 512), (256, 256, 512, 1024)),
+            mlp_channels=((512, 256, 256, 512), (512, 256, 512, 1024)),
             norm_cfg=dict(type='BN2d', eps=1e-3, momentum=0.1),
             use_xyz=True,
             normalize_xyz=False,
@@ -82,12 +74,12 @@ model = dict(
 
 # model training and testing settings
 train_cfg = dict(
-    sample_mod='spec', pos_distance_thr=10.0, expand_dims_length=0.05, keep_thr = 0.01)
+    sample_mod='spec', pos_distance_thr=10.0, expand_dims_length=0.05, keep_thr = 0.75)
 test_cfg = dict(
     nms_cfg=dict(type='nms', iou_thr=0.1),
     sample_mod='spec',
     score_thr=0.0,
-    keep_thr=0.01,
+    keep_thr=0.75,
     per_class_proposal=True,
     expand_dims_length=0.05,
     with_hidden=True,
