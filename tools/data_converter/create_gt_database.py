@@ -235,6 +235,7 @@ def create_groundtruth_database(dataset_class_name,
         example = dataset.pipeline(input_dict)
         annos = example['ann_info']
         image_idx = example['sample_idx']
+        scene_idx = example['scene_idx']
         points = example['points'].tensor.numpy()
         gt_boxes_3d = annos['gt_bboxes_3d'].tensor.numpy()
         names = annos['gt_names']
@@ -282,7 +283,7 @@ def create_groundtruth_database(dataset_class_name,
                 gt_boxes, gt_masks, mask_inds, annos['img'])
 
         for i in range(num_obj):
-            filename = f'{image_idx}_{names[i]}_{i}.bin'
+            filename = f'{scene_idx}_{image_idx}_{names[i]}_{i}.bin'
             abs_filepath = osp.join(database_save_path, filename)
             rel_filepath = osp.join(f'{info_prefix}_gt_database', filename)
 

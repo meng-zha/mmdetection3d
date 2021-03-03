@@ -190,8 +190,8 @@ def kitti_track_data_prep(root_path, info_prefix, version, out_dir):
         version (str): Dataset version.
         out_dir (str): Output directory of the groundtruth database info.
     """
-    kitti_track.create_kitti_track_info_file(root_path, info_prefix)
-    kitti_track.create_reduced_point_cloud(root_path, info_prefix)
+    # kitti_track.create_kitti_track_info_file(root_path, info_prefix)
+    # kitti_track.create_reduced_point_cloud(root_path, info_prefix)
     # TODO: gt_database need to be edited for tracking
     create_groundtruth_database(
         'KittiTrackDataset',

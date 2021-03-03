@@ -158,6 +158,7 @@ class KittiTrackDataset(Custom3DDataset):
             sample_idx=sample_idx,
             pts_filename=pts_filename,
             img_prefix=None,
+            scene_idx=info['image']['scene_idx'],
             img_info=dict(filename=img_filename),
             pose=pose,
             track=info['track'],
